@@ -1,0 +1,29 @@
+-- 사용자 및 기록지 템플릿 UI 설정 (MariaDB / MySQL 8+)
+-- 적용: mysql ... < sql/001_auth_and_template_settings.sql
+
+CREATE TABLE IF NOT EXISTS users (
+  id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  login_id VARCHAR(64) NOT NULL,
+  password_hash VARCHAR(255) NOT NULL,
+  name VARCHAR(128) NOT NULL,
+  department VARCHAR(256) NOT NULL DEFAULT '',
+  role ENUM('admin', 'user') NOT NULL DEFAULT 'user',
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE KEY uq_users_login_id (login_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS template_ui_configs (
+  template_id VARCHAR(64) NOT NULL PRIMARY KEY,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  fields_json LONGTEXT NOT NULL,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS template_section_presets (
+  preset_id VARCHAR(64) NOT NULL PRIMARY KEY,
+  category ENUM('common', 'patient', 'extra') NOT NULL DEFAULT 'common',
+  title VARCHAR(128) NOT NULL,
+  sections_json LONGTEXT NOT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

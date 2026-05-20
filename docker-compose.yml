@@ -1,0 +1,102 @@
+# =====================================================
+# 간호기록 서비스 - Docker Compose (통합)
+#
+# 구조: Nginx(프론트엔드) → NestJS(백엔드) → MariaDB
+# Apache2가 port 3000으로 포워딩 → Nginx 컨테이너가 수신
+#
+# 사용법 (하이픈 없는 Docker Compose v2 플러그인 권장):
+#   docker compose up -d --build
+#   docker compose restart
+#   docker compose logs -f
+#   docker compose down
+#
+# 주의: 구형 `docker-compose`(Python 1.x)는 최신 Docker와 함께 쓰면
+#   recreate 시 KeyError: 'ContainerConfig' 가 날 수 있습니다.
+#   그 경우 아래 중 하나를 사용하세요.
+#   1) 이 파일과 동일하게 `docker compose`(v2) 사용
+#   2) 또는 기존 컨테이너 제거 후 다시 up (데이터는 named volume db_data 유지):
+#        docker rm -f nursing-note-db nursing-note-stt nursing-note-backend nursing-note-frontend
+#        docker compose up -d --build
+# =====================================================
+
+services:
+
+  # --- 1. MariaDB 데이터베이스 ---
+  db:
+    image: mariadb:10.11
+    container_name: nursing-note-db
+    restart: unless-stopped
+    ports:
+      # 호스트에서 DB 접속 시 3307 포트 사용 (기존 설정과 동일)
+      # 컨테이너 내부/백엔드 연결은 그대로 3306
+      - "3307:3306"
+    environment:
+      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:-root_pass_1234}
+      MYSQL_DATABASE: ${DB_NAME:-nursing_note}
+      MYSQL_USER: ${DB_USER:-nursing_user}
+      MYSQL_PASSWORD: ${DB_PASSWORD:-nursing_pass_1234}
+    volumes:
+      # 데이터 영속성 — 컨테이너 삭제해도 데이터 유지
+      - db_data:/var/lib/mysql
+      # 최초 실행 시 테이블 스키마 자동 생성
+      - ./nursing_note_frontend/db/init:/docker-entrypoint-initdb.d
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+    healthcheck:
+      # mysqladmin ping으로 연결 가능 여부 확인 (이미지별 호환성 좋음)
+      # init 스크립트 실행 시간을 고려해 start_period 60초
+      test: ["CMD-SHELL", "mysqladmin ping -h localhost -u root -p\"$$MYSQL_ROOT_PASSWORD\" || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+
+  # --- 2. NestJS 백엔드 API ---
+  backend:
+    build: ./nursing_note_backend
+    container_name: nursing-note-backend
+    restart: unless-stopped
+    # 백엔드의 .env 파일에서 API 키 등 환경변수 로드
+    env_file:
+      - ./nursing_note_backend/.env
+    environment:
+      # Docker 네트워크에서는 서비스명으로 DB에 접근
+      # (localhost가 아니라 "db" 컨테이너로 연결)
+      DB_HOST: db
+      DB_PORT: 3306
+      PY_STT_API_URL: http://stt:8000/v1/transcribe
+    depends_on:
+      db:
+        condition: service_healthy
+      stt:
+        condition: service_healthy
+
+  # --- 3. WhisperX + pyannote STT 서비스 ---
+  stt:
+    build: ./nursing_note_stt_service
+    container_name: nursing-note-stt
+    restart: unless-stopped
+    env_file:
+      - ./nursing_note_stt_service/.env
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health')\""]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
+
+  # --- 4. Nginx 프론트엔드 (+ 리버스 프록시) ---
+  frontend:
+    build: ./nursing_note_frontend
+    container_name: nursing-note-frontend
+    restart: unless-stopped
+    ports:
+      # Apache2가 포워딩하는 포트 3000 → Nginx 컨테이너의 80
+      - "3000:80"
+    depends_on:
+      - backend
+
+volumes:
+  db_data:
+    driver: local

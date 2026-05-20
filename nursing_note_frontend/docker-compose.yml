@@ -1,0 +1,27 @@
+# 간호기록 서비스 - Docker Compose
+# 사용법: docker compose up -d
+
+services:
+  db:
+    image: mariadb:10.11
+    container_name: ${DB_CONTAINER_NAME:-nursing-note-db}
+    restart: unless-stopped
+    ports:
+      - "${DB_PORT:-3307}:3306"
+    environment:
+      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:-root_pass_1234}
+      MYSQL_DATABASE: ${DB_NAME:-nursing_note}
+      MYSQL_USER: ${DB_USER:-nursing_user}
+      MYSQL_PASSWORD: ${DB_PASSWORD:-nursing_pass_1234}
+    volumes:
+      # 데이터 영속성을 위한 볼륨
+      - db_data:/var/lib/mysql
+      # 컨테이너 최초 실행 시 init.sql 자동 실행
+      - ./db/init:/docker-entrypoint-initdb.d
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+
+volumes:
+  db_data:
+    driver: local

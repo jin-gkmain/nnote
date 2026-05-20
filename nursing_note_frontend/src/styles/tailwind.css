@@ -1,0 +1,30 @@
+@import 'tailwindcss' source(none);
+@source '../**/*.{js,ts,jsx,tsx}';
+
+@import 'tw-animate-css';
+
+/* Voice record: progress track (fill width driven inline from React) */
+.nursing-voice-loading-bar-track {
+  @apply h-2 w-full overflow-hidden rounded-full bg-gray-200;
+}
+.nursing-voice-loading-bar-fill {
+  @apply h-full rounded-full bg-blue-600 transition-[width] duration-300 ease-out;
+}
+
+/* AI 기록 요약: 요약 대기 오버레이용 불확정 진행 바 */
+.nursing-ai-summary-loading-bar-track {
+  @apply relative h-2.5 w-full overflow-hidden rounded-full bg-gray-200;
+}
+.nursing-ai-summary-loading-bar-fill {
+  @apply absolute top-0 bottom-0 w-[38%] rounded-full bg-blue-600;
+  animation: nursing-ai-summary-bar-slide 1.2s ease-in-out infinite;
+}
+
+@keyframes nursing-ai-summary-bar-slide {
+  0% {
+    left: -38%;
+  }
+  100% {
+    left: 100%;
+  }
+}

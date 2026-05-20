@@ -1,0 +1,9 @@
+# Docker 빌드 시 불필요한 파일 제외 (빌드 속도 + 이미지 크기 최적화)
+node_modules
+dist
+.env
+*.md
+.git
+.gitignore
+# dist는 제외되는데 tsbuildinfo만 있으면 tsc 증분 빌드가 emit을 건너뜀 → /app/dist 없음
+*.tsbuildinfo

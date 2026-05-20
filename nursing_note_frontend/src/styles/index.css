@@ -1,0 +1,52 @@
+@import './fonts.css';
+@import './tailwind.css';
+@import './theme.css';
+
+/* iOS 등: 자동 글자 확대 완화, 노치·홈 인디케이터 대응 */
+html {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+/**
+ * AppLayout 상단 헤더(TODAY) 아래부터 기록 상세 오버레이를 열 때 사용.
+ * 값은 AppLayout header와 동기화: 모바일 safe-area + min-h 52px + pb-2, md 이상 h-60.
+ */
+:root {
+  --nursing-app-header-offset: calc(
+    env(safe-area-inset-top, 0px) + 3.25rem + 0.5rem
+  );
+}
+
+@media (min-width: 768px) {
+  :root {
+    --nursing-app-header-offset: 3.75rem;
+  }
+}
+
+textarea {
+  resize: none;
+}
+
+/* 모바일·좁은 화면: 대시보드 기록 테이블 가로 스크롤바 — 두께↑, 옅은 회색 */
+@media (max-width: 1023px) {
+  .dashboard-table-scroll-x {
+    scrollbar-color: #e5e7eb #f9fafb; /* thumb / track — Firefox */
+    scrollbar-width: auto;
+  }
+  .dashboard-table-scroll-x::-webkit-scrollbar {
+    height: 18px;
+  }
+  .dashboard-table-scroll-x::-webkit-scrollbar-track {
+    background: #f9fafb;
+    /* 가로 스크롤바 좌·우 끝을 타원(캡슐) 형태로 */
+    border-radius: 9999px;
+  }
+  .dashboard-table-scroll-x::-webkit-scrollbar-thumb {
+    background: #e5e7eb;
+    border-radius: 9999px;
+  }
+  .dashboard-table-scroll-x::-webkit-scrollbar-thumb:hover {
+    background: #d1d5db;
+  }
+}
