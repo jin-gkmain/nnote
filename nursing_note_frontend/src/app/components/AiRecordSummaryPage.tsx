@@ -8,8 +8,8 @@ import {
   buildDefaultRecordTitle,
   classificationLabelForTemplate,
 } from "@/app/data/recordTitle";
-import type { DashboardRecordRow, NursingRecord } from "@/app/data/nursingRecords";
-import { fetchPatientRecords, toRecordDate, toRecordTime } from "@/app/data/nursingRecords";
+import type { DashboardRecordRow, RecordDetailResponse } from "@/app/data/nursingRecords";
+import { fetchRecordById, toRecordDate, toRecordTime } from "@/app/data/nursingRecords";
 import { VOICE_RECORD_TEMPLATES, type VoiceRecordTemplateId } from "@/app/data/voiceRecordTemplates";
 import { buildAiTemplateFieldPayload, splitTemplateLabel } from "@/app/data/template-field-registry";
 import { queryKeys } from "@/app/query/query-keys";
@@ -21,23 +21,27 @@ import {
   useTemplatesMapQuery,
 } from "@/app/query/use-app-query";
 
-function buildSummaryPrompt(row: DashboardRecordRow, record: NursingRecord): string {
-  const p = row.patient;
-  return `[Patient context]
-Name: ${p.name}
-PatientNo: ${p.patientNumber}
-Room: ${p.roomNumber}
-Gender: ${p.gender}
-DOB: ${p.birthDate}
+function buildRecordText(data: Record<string, unknown>): string {
+  return Object.entries(data)
+    .map(([key, value]) => {
+      const text =
+        value != null && typeof value === "object"
+          ? JSON.stringify(value)
+          : String(value ?? "");
+      return `${key}: ${text}`;
+    })
+    .join("\n");
+}
 
-[Source record metadata]
+function buildSummaryPrompt(row: DashboardRecordRow, record: RecordDetailResponse): string {
+  return `[Source record metadata]
 RecordType: ${row.recordType}
 Title: ${row.title}
 DocumentNo: ${row.documentNumber}
 RecordDateTime: ${row.recordDateTime}
 
 [Source record text]
-${record.soapie}`;
+${buildRecordText(record.data)}`;
 }
 
 export default function AiRecordSummaryPage() {
@@ -54,7 +58,6 @@ export default function AiRecordSummaryPage() {
   }, [templatesMapQuery.data, templatesMapQuery.isSuccess]);
 
   const [templateId, setTemplateId] = useState<VoiceRecordTemplateId>(VOICE_RECORD_TEMPLATES[0]);
-  const [selectedPatientId, setSelectedPatientId] = useState<string>("");
   const templateFieldsQuery = useMergedTemplateFieldsQuery(templateId);
   const visibleTemplateFields = (templateFieldsQuery.data ?? []).filter((f) => !f.hidden);
   const groupedTemplateFields = useMemo(() => {
@@ -80,24 +83,6 @@ export default function AiRecordSummaryPage() {
   const summaryTitleSessionRef = useRef("");
 
   const rows = mergedRecordsQuery.data ?? [];
-  const patientOptions = useMemo(() => {
-    const map = new Map<number, { patientId: number; name: string; patientNumber: string }>();
-    rows.forEach((row) => {
-      if (!map.has(row.patientId)) {
-        map.set(row.patientId, {
-          patientId: row.patientId,
-          name: row.patient.name,
-          patientNumber: row.patient.patientNumber,
-        });
-      }
-    });
-    return [...map.values()].sort((a, b) => a.name.localeCompare(b.name, "ko"));
-  }, [rows]);
-  const filteredRows = useMemo(() => {
-    if (!selectedPatientId) return rows;
-    const pid = Number(selectedPatientId);
-    return rows.filter((row) => row.patientId === pid);
-  }, [rows, selectedPatientId]);
   const listLoading = mergedRecordsQuery.isLoading || mergedRecordsQuery.isFetching;
   const selectClass =
     "h-10 w-full min-w-0 rounded-lg border border-gray-200 bg-gray-50 px-3 text-sm text-gray-900 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500/30";
@@ -108,7 +93,7 @@ export default function AiRecordSummaryPage() {
       summaryTitleSessionRef.current = "";
       return;
     }
-    const sessionKey = `${summaryTitleGen}|${selectedRow.patientId}|${templateId}`;
+    const sessionKey = `${summaryTitleGen}|${selectedRow.id}|${templateId}`;
     if (sessionKey === summaryTitleSessionRef.current) {
       return;
     }
@@ -131,7 +116,6 @@ export default function AiRecordSummaryPage() {
       );
       setSummaryRecordTitle(
         buildDefaultRecordTitle({
-          patientName: selectedRow.patient.name,
           classificationLabel: classificationLabelForTemplate(
             templateId,
             templatesMapQuery.data,
@@ -166,14 +150,10 @@ export default function AiRecordSummaryPage() {
     setIsGenerating(true);
     setDraftContent(null);
     try {
-      const records = await queryClient.fetchQuery({
-        queryKey: queryKeys.records.patient(String(selectedRow.patientId)),
-        queryFn: () => fetchPatientRecords(String(selectedRow.patientId)),
+      const sourceRecord = await queryClient.fetchQuery({
+        queryKey: queryKeys.records.detail(selectedRow.id),
+        queryFn: () => fetchRecordById(selectedRow.id),
       });
-      const sourceRecord = records.find((r) => r.id === selectedRow.clientRecordId);
-      if (!sourceRecord) {
-        throw new Error("선택한 기록을 다시 불러오지 못했습니다.");
-      }
       const prompt = buildSummaryPrompt(selectedRow, sourceRecord);
       const structuredHints = buildStructuredHintsFromTemplate(visibleTemplateFields, prompt);
       const hintContext = buildHintContextText(structuredHints);
@@ -229,7 +209,6 @@ export default function AiRecordSummaryPage() {
         return;
       }
       await createRecordMutation.mutateAsync({
-        patientId: String(selectedRow.patientId),
         body: {
           recordType: templateId,
           documentNumber,
@@ -237,7 +216,7 @@ export default function AiRecordSummaryPage() {
           recordTime,
           title,
           data: dataWithMeta,
-          creationSource: "ai",
+          creationSource: "record_based",
         },
       });
       setMessage("기록이 저장되었습니다.");
@@ -260,15 +239,17 @@ export default function AiRecordSummaryPage() {
   }, [queryClient]);
 
   return (
-    <div className="relative flex min-h-full w-full flex-col text-left">
+    <div className="relative mx-auto flex min-h-[calc(100dvh-7.5rem)] w-full max-w-[720px] flex-col text-left lg:max-w-none">
       <RecordDetailOverlay
         recordId={detailRecordId}
         onClose={() => setDetailRecordId(null)}
         onRecordChanged={reloadRows}
       />
-      <h1 className="mb-4 text-xl font-bold text-gray-900 sm:mb-6 sm:text-2xl">AI 기록 요약</h1>
+      <h1 className="mb-5 text-[28px] font-bold leading-tight text-[#111827] sm:mb-6 sm:text-3xl">
+        기록기반 생성
+      </h1>
       <div className="grid min-h-0 flex-1 grid-cols-1 gap-6 lg:grid-cols-[3fr_7fr] lg:gap-8">
-        <div className="flex min-h-0 min-w-0 flex-col rounded-xl border border-gray-200 bg-white p-4 shadow-sm sm:p-5">
+        <div className="mobile-app-card flex min-h-0 min-w-0 flex-col p-4 sm:p-5">
           <label className="mb-2 block text-sm font-medium text-gray-800">생성 템플릿</label>
           <select
             className={selectClass}
@@ -281,37 +262,17 @@ export default function AiRecordSummaryPage() {
           </select>
           <p className="mt-1.5 text-xs text-gray-500">선택 기록을 바탕으로 위 템플릿의 새 기록을 생성합니다.</p>
 
-          <label className="mt-5 mb-2 block text-sm font-medium text-gray-800">환자 선택</label>
-          <select
-            className={selectClass}
-            value={selectedPatientId}
-            onChange={(e) => {
-              setSelectedPatientId(e.target.value);
-              setSelectedRow(null);
-              setDraftContent(null);
-              setError("");
-              setMessage("");
-            }}
-          >
-            <option value="">전체 환자</option>
-            {patientOptions.map((patient) => (
-              <option key={patient.patientId} value={String(patient.patientId)}>
-                {patient.name} ({patient.patientNumber})
-              </option>
-            ))}
-          </select>
-
           <p className="mt-5 text-sm font-medium text-gray-800">기준 기록 선택</p>
           <div className="mt-3 min-h-0 flex-1 overflow-auto rounded-lg border border-gray-200 bg-gray-50/80">
             {listLoading ? (
               <p className="p-4 text-center text-sm text-gray-500">목록을 불러오는 중…</p>
-            ) : filteredRows.length === 0 ? (
+            ) : rows.length === 0 ? (
               <p className="p-4 text-center text-sm text-gray-500">
-                {selectedPatientId ? "선택한 환자의 기록이 없습니다." : "최근 기록이 없습니다."}
+                최근 기록이 없습니다.
               </p>
             ) : (
               <div className="divide-y divide-gray-100 bg-white">
-                {filteredRows.map((row) => (
+                {rows.map((row) => (
                   <button
                     key={`${row.id}-${row.clientRecordId}`}
                     type="button"
@@ -337,14 +298,14 @@ export default function AiRecordSummaryPage() {
               type="button"
               disabled={!selectedRow || isGenerating || visibleTemplateFields.length === 0}
               onClick={handleGenerate}
-              className="w-full rounded-xl bg-blue-600 py-3 text-sm font-semibold text-white hover:bg-blue-700 disabled:bg-gray-300"
+              className="w-full rounded-lg bg-[#3B82F6] py-3 text-sm font-bold text-white hover:bg-[#2563EB] disabled:bg-gray-300"
             >
               {isGenerating ? "생성 중…" : "기록 기반 생성"}
             </button>
           </div>
         </div>
 
-        <div className="flex min-h-0 min-w-0 flex-col rounded-xl border border-gray-200 bg-white p-4 shadow-sm sm:p-5">
+        <div className="mobile-app-card flex min-h-0 min-w-0 flex-col p-4 sm:p-5">
           <h2 className="mb-4 text-sm font-semibold text-gray-900">생성 결과</h2>
           {!draftContent ? (
             <div className="flex flex-1 items-center justify-center rounded-lg border border-dashed border-gray-200 bg-gray-50/80 px-4 py-16 text-center text-sm text-gray-500">
@@ -371,10 +332,9 @@ export default function AiRecordSummaryPage() {
                       return (
                         <div key={field.storageKey}>
                           <label className="mb-1 block text-xs font-medium text-gray-600">{fieldLabel}</label>
-                          <TemplateFieldControl
+                            <TemplateFieldControl
                             field={field}
                             templateId={templateId}
-                            patientId={selectedRow?.patientId}
                             value={String(draftContent[field.storageKey] ?? "")}
                             onChange={(nextValue) =>
                               setDraftContent((prev) => (prev ? { ...prev, [field.storageKey]: nextValue } : prev))
@@ -392,7 +352,7 @@ export default function AiRecordSummaryPage() {
                 type="button"
                 onClick={handleSave}
                 disabled={!selectedRow || isSaving}
-                className="w-full rounded-xl bg-blue-600 py-2.5 text-sm font-semibold text-white hover:bg-blue-700 disabled:bg-gray-300"
+                className="sticky bottom-0 w-full rounded-lg bg-[#3B82F6] py-3 text-sm font-bold text-white hover:bg-[#2563EB] disabled:bg-gray-300"
               >
                 {isSaving ? "저장 중…" : "간호기록 저장"}
               </button>

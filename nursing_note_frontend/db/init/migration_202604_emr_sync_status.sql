@@ -2,6 +2,6 @@
 USE nursing_note;
 
 ALTER TABLE records
-  ADD COLUMN emr_sync_status ENUM('pending','sent') NOT NULL DEFAULT 'pending'
+  ADD COLUMN IF NOT EXISTS emr_sync_status ENUM('pending','sent') NOT NULL DEFAULT 'pending'
     COMMENT 'EMR 연동: 전송 전/후'
   AFTER creation_source;

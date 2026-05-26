@@ -35,6 +35,7 @@ import { getPreferredSttEngine } from "@/app/data/stt-engine-preference";
 import {
   createRecord,
   deleteRecord,
+  fetchRecordDashboardStats,
   fetchMergedRecentRecordsForSummary,
   fetchRecentCreatedRecords,
   fetchRecentUpdatedRecords,
@@ -42,14 +43,9 @@ import {
   fetchRecordListPage,
   updateRecord,
   updateRecordEmrStatus,
+  type RecordCreationSource,
   type RecordListSort,
 } from "@/app/data/nursingRecords";
-import {
-  createPatientRequest,
-  fetchPatients,
-  fetchPatientStats,
-} from "@/app/data/patients";
-import { fetchPatientDetail } from "@/app/data/patientDetails";
 import {
   fetchTemplateUiConfigMap,
   fetchTemplateSectionPresets,
@@ -202,25 +198,10 @@ export function useMergedTemplateFieldsQuery(templateId: VoiceRecordTemplateId) 
   });
 }
 
-export function usePatientsQuery() {
+export function useRecordStatsQuery() {
   return useQuery({
-    queryKey: queryKeys.patients.all,
-    queryFn: fetchPatients,
-  });
-}
-
-export function usePatientStatsQuery() {
-  return useQuery({
-    queryKey: queryKeys.patients.stats,
-    queryFn: fetchPatientStats,
-  });
-}
-
-export function usePatientDetailQuery(patientId: string) {
-  return useQuery({
-    queryKey: queryKeys.patients.detail(patientId),
-    queryFn: () => fetchPatientDetail(patientId),
-    enabled: Boolean(patientId),
+    queryKey: queryKeys.records.stats,
+    queryFn: fetchRecordDashboardStats,
   });
 }
 
@@ -349,19 +330,9 @@ export function useDeleteTemplateUiMutation(token: string) {
         queryKeys.records.recentCreated(10),
         queryKeys.records.recentUpdated(10),
         queryKeys.records.mergedForSummary(50),
-        queryKeys.patients.stats,
+        queryKeys.records.stats,
       ]);
       await queryClient.invalidateQueries({ queryKey: ["records"] });
-    },
-  });
-}
-
-export function useCreatePatientMutation() {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: createPatientRequest,
-    onSuccess: async () => {
-      await invalidateByKeys(queryClient, [queryKeys.patients.all, queryKeys.patients.stats]);
     },
   });
 }
@@ -370,7 +341,6 @@ export function useCreateRecordMutation() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (payload: {
-      patientId: string;
       body: {
         recordType: string;
         documentNumber: string;
@@ -378,16 +348,15 @@ export function useCreateRecordMutation() {
         recordTime: string;
         title: string;
         data: Record<string, unknown>;
-        creationSource?: "manual" | "voice" | "ai" | "ocr";
+        creationSource?: RecordCreationSource;
       };
-    }) => createRecord(payload.patientId, payload.body),
+    }) => createRecord(payload.body),
     onSuccess: async (_data, payload) => {
       await invalidateByKeys(queryClient, [
-        queryKeys.records.patient(payload.patientId),
         queryKeys.records.recentCreated(10),
         queryKeys.records.recentUpdated(10),
         queryKeys.records.mergedForSummary(50),
-        queryKeys.patients.stats,
+        queryKeys.records.stats,
       ]);
     },
   });
@@ -405,7 +374,6 @@ export function useUpdateRecordMutation() {
         title?: string;
         data?: Record<string, unknown>;
       };
-      patientId?: string;
     }) => updateRecord(payload.recordId, payload.body),
     onSuccess: async (_data, payload) => {
       await invalidateByKeys(queryClient, [
@@ -413,9 +381,6 @@ export function useUpdateRecordMutation() {
         queryKeys.records.recentUpdated(10),
         queryKeys.records.mergedForSummary(50),
       ]);
-      if (payload.patientId) {
-        await queryClient.invalidateQueries({ queryKey: queryKeys.records.patient(payload.patientId) });
-      }
     },
   });
 }
@@ -423,15 +388,14 @@ export function useUpdateRecordMutation() {
 export function useDeleteRecordMutation() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (payload: { recordId: string | number; patientId: string }) =>
+    mutationFn: (payload: { recordId: string | number }) =>
       deleteRecord(payload.recordId),
     onSuccess: async (_data, payload) => {
       await invalidateByKeys(queryClient, [
-        queryKeys.records.patient(payload.patientId),
         queryKeys.records.recentCreated(10),
         queryKeys.records.recentUpdated(10),
         queryKeys.records.mergedForSummary(50),
-        queryKeys.patients.stats,
+        queryKeys.records.stats,
       ]);
     },
   });
@@ -448,7 +412,7 @@ export function useUpdateRecordEmrStatusMutation(token: string | null) {
         queryKeys.records.recentCreated(10),
         queryKeys.records.recentUpdated(10),
         queryKeys.records.mergedForSummary(50),
-        queryKeys.patients.stats,
+        queryKeys.records.stats,
       ]);
     },
   });

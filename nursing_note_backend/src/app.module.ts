@@ -3,7 +3,6 @@ import { ConfigModule } from '@nestjs/config';
 import { resolve } from 'path';
 import { AuthModule } from './auth/auth.module';
 import { DatabaseModule } from './database/database.module';
-import { PatientsModule } from './patients/patients.module';
 import { RecordsModule } from './records/records.module';
 import { OcrModule } from './ocr/ocr.module';
 import { AiDraftModule } from './ai-draft/ai-draft.module';
@@ -26,7 +25,6 @@ import { AiSearchModule } from './ai-search/ai-search.module';
     TemplatesModule,
     TemplateUiModule,
     AbbreviationsModule,
-    PatientsModule,
     RecordsModule,
     OcrModule,
     AiDraftModule,

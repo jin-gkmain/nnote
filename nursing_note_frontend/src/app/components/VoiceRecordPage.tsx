@@ -1,8 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ChevronLeft, ChevronRight, Plus, Upload, X } from "lucide-react";
-import type { Patient } from "@/app/App";
+import {
+  Check,
+  ChevronLeft,
+  ChevronRight,
+  FileUp,
+  Mic,
+  Pause,
+  Upload,
+} from "lucide-react";
 import { useAuth } from "@/app/auth/auth-context";
-import SelectPatientForVoiceModal from "@/app/components/SelectPatientForVoiceModal";
 import SelectVoiceRecordTemplatesModal from "@/app/components/SelectVoiceRecordTemplatesModal";
 import { buildRecordPayload } from "@/app/data/recordPayload";
 import {
@@ -34,11 +40,6 @@ import {
   useUpdateRecordEmrStatusMutation,
 } from "@/app/query/use-app-query";
 import { getPreferredSttEngine } from "@/app/data/stt-engine-preference";
-
-interface VoiceRecordPageProps {
-  patients: Patient[];
-  onPatientsRefresh: () => void;
-}
 
 const TEMPLATE_FILL_CONCURRENCY = 2;
 
@@ -108,6 +109,66 @@ interface RecordingHistoryItem {
 }
 
 type RecordingState = "idle" | "recording" | "paused";
+type VoiceFlowStep = "templates" | "capture";
+type VoiceInputMode = "record" | "upload";
+type LiveTranscriptStatus =
+  | "idle"
+  | "connecting"
+  | "listening"
+  | "paused"
+  | "unsupported"
+  | "error"
+  | "stopped";
+type LiveTranscriptProvider = "idle" | "whisperlivekit" | "browser";
+
+const EXCLUDED_VOICE_TEMPLATE_IDS = new Set(["SOAP", "SOAPIE", "SBAR", "SOPA"]);
+
+interface SpeechRecognitionResultLike {
+  isFinal: boolean;
+  0?: { transcript?: string };
+}
+
+interface SpeechRecognitionEventLike {
+  resultIndex: number;
+  results: ArrayLike<SpeechRecognitionResultLike>;
+}
+
+interface SpeechRecognitionLike {
+  continuous: boolean;
+  interimResults: boolean;
+  lang: string;
+  onresult: ((event: SpeechRecognitionEventLike) => void) | null;
+  onerror: (() => void) | null;
+  onend: (() => void) | null;
+  start: () => void;
+  stop: () => void;
+}
+
+type SpeechRecognitionConstructor = new () => SpeechRecognitionLike;
+
+interface WhisperLiveLine {
+  speaker?: number;
+  text?: string | null;
+  start?: string;
+  end?: string;
+}
+
+interface WhisperLiveMessage {
+  type?: "config" | "snapshot" | "diff" | "ready_to_stop" | string;
+  status?: string;
+  lines?: WhisperLiveLine[];
+  new_lines?: WhisperLiveLine[];
+  buffer_transcription?: string;
+  buffer_diarization?: string;
+  error?: string;
+}
+
+declare global {
+  interface Window {
+    SpeechRecognition?: SpeechRecognitionConstructor;
+    webkitSpeechRecognition?: SpeechRecognitionConstructor;
+  }
+}
 
 function formatDuration(totalSec: number): string {
   const m = Math.floor(totalSec / 60)
@@ -146,14 +207,32 @@ function formatDateTime(value: string): string {
   });
 }
 
-export default function VoiceRecordPage({
-  patients,
-  onPatientsRefresh,
-}: VoiceRecordPageProps) {
+function appendTranscript(prev: string, next: string): string {
+  const cleanNext = next.trim();
+  if (!cleanNext) return prev;
+  const cleanPrev = prev.trim();
+  if (!cleanPrev) return cleanNext;
+  return `${cleanPrev} ${cleanNext}`;
+}
+
+function buildWhisperLiveKitSocketUrl(): string {
+  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+  return `${protocol}//${window.location.host}/asr?language=ko&mode=full`;
+}
+
+function textFromWhisperLiveLines(lines: WhisperLiveLine[] | undefined): string {
+  if (!lines?.length) return "";
+  return lines
+    .map((line) => (typeof line.text === "string" ? line.text.trim() : ""))
+    .filter(Boolean)
+    .join(" ");
+}
+
+export default function VoiceRecordPage() {
   const { user, token } = useAuth();
-  const [selectModalOpen, setSelectModalOpen] = useState(false);
   const [templateModalOpen, setTemplateModalOpen] = useState(false);
-  const [selectedPatient, setSelectedPatient] = useState<Patient | null>(null);
+  const [flowStep, setFlowStep] = useState<VoiceFlowStep>("templates");
+  const [inputMode, setInputMode] = useState<VoiceInputMode>("record");
   const [selectedTemplates, setSelectedTemplates] = useState<VoiceRecordTemplateId[]>(
     [],
   );
@@ -165,6 +244,11 @@ export default function VoiceRecordPage({
   const [history, setHistory] = useState<RecordingHistoryItem[]>([]);
   const [recordingState, setRecordingState] = useState<RecordingState>("idle");
   const [recordingSec, setRecordingSec] = useState(0);
+  const [liveTranscript, setLiveTranscript] = useState("");
+  const [liveInterimTranscript, setLiveInterimTranscript] = useState("");
+  const [liveTranscriptStatus, setLiveTranscriptStatus] =
+    useState<LiveTranscriptStatus>("idle");
+  const [liveTranscriptNotice, setLiveTranscriptNotice] = useState("");
   const [isGenerating, setIsGenerating] = useState(false);
   /** 오버레이 문구·진행 막대 구간용 */
   const [generationPhase, setGenerationPhase] = useState<
@@ -185,8 +269,14 @@ export default function VoiceRecordPage({
   const templatesMapQuery = useTemplatesMapQuery();
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const liveTranscriptScrollRef = useRef<HTMLDivElement | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  const speechRecognitionRef = useRef<SpeechRecognitionLike | null>(null);
+  const liveSttSocketRef = useRef<WebSocket | null>(null);
+  const liveSttProviderRef = useRef<LiveTranscriptProvider>("idle");
+  const pendingLiveAudioChunksRef = useRef<Blob[]>([]);
+  const liveSocketClosingRef = useRef(false);
   const chunksRef = useRef<Blob[]>([]);
   const shouldGenerateOnStopRef = useRef(false);
   const completedDurationRef = useRef(0);
@@ -195,6 +285,8 @@ export default function VoiceRecordPage({
   generationPhaseRef.current = generationPhase;
   const isSavingRef = useRef(isSaving);
   isSavingRef.current = isSaving;
+  const recordingStateRef = useRef(recordingState);
+  recordingStateRef.current = recordingState;
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
   /** 오버레이 진행 막대: 실제 백분율 없이 천천히 차오르는 표시 */
@@ -209,9 +301,10 @@ export default function VoiceRecordPage({
   const updateEmrMutation = useUpdateRecordEmrStatusMutation(token);
   const availableTemplates = useMemo((): string[] => {
     const fromServer = Object.keys(templatesMapQuery.data ?? {});
-    if (templatesMapQuery.isSuccess && fromServer.length === 0) return [];
-    return fromServer.length > 0 ? fromServer : [...VOICE_RECORD_TEMPLATES];
-  }, [templatesMapQuery.data, templatesMapQuery.isSuccess]);
+    return (fromServer.length > 0 ? fromServer : [...VOICE_RECORD_TEMPLATES]).filter(
+      (templateId) => !EXCLUDED_VOICE_TEMPLATE_IDS.has(templateId.toUpperCase()),
+    );
+  }, [templatesMapQuery.data]);
 
   const voiceTitleSessionByTemplateRef = useRef<Record<string, string>>({});
   useEffect(() => {
@@ -230,11 +323,41 @@ export default function VoiceRecordPage({
     });
   }, [availableTemplates]);
 
-  const canStartVoiceCapture =
-    Boolean(selectedPatient) && selectedTemplates.length > 0;
+  const canStartVoiceCapture = selectedTemplates.length > 0;
+  const selectedTemplateLabels = useMemo(
+    () =>
+      selectedTemplates.map((tid) =>
+        classificationLabelForTemplate(tid, templatesMapQuery.data),
+      ),
+    [selectedTemplates, templatesMapQuery.data],
+  );
 
   const templateSelectionLocked =
     !!generatedDraft || isGenerating || recordingState !== "idle";
+
+  const toggleTemplateSelection = useCallback((templateId: VoiceRecordTemplateId) => {
+    if (templateSelectionLocked) return;
+    setSelectedTemplates((prev) => {
+      if (prev.includes(templateId)) {
+        return prev.filter((id) => id !== templateId);
+      }
+      if (prev.length >= 3) {
+        setError("서식은 최대 3개까지 선택할 수 있습니다.");
+        return prev;
+      }
+      setError("");
+      return [...prev, templateId];
+    });
+  }, [templateSelectionLocked]);
+
+  const goToCaptureStep = useCallback(() => {
+    if (selectedTemplates.length === 0) {
+      setError("생성할 서식을 하나 이상 선택해 주세요.");
+      return;
+    }
+    setError("");
+    setFlowStep("capture");
+  }, [selectedTemplates.length]);
 
   const activeDraftTemplateIdResolved = useMemo(() => {
     const ids = generatedDraft?.sessionTemplateIds;
@@ -246,12 +369,12 @@ export default function VoiceRecordPage({
   }, [generatedDraft, activeDraftTemplateId]);
 
   useEffect(() => {
-    if (!selectedPatient || !generatedDraft) {
+    if (!generatedDraft) {
       setRecordTitlesByTemplateId({});
       voiceTitleSessionByTemplateRef.current = {};
       return;
     }
-    const genKey = `${generatedDraft.generatedAt}|${selectedPatient.id}`;
+    const genKey = generatedDraft.generatedAt;
     const updates: Record<string, string> = {};
     for (const tid of generatedDraft.sessionTemplateIds) {
       const sessionKey = `${genKey}|${tid}`;
@@ -272,7 +395,6 @@ export default function VoiceRecordPage({
         );
         const label = classificationLabelForTemplate(tid, templatesMapQuery.data);
         updates[tid] = buildDefaultRecordTitle({
-          patientName: selectedPatient.name,
           classificationLabel: label,
           recordDate,
           recordTime,
@@ -284,7 +406,7 @@ export default function VoiceRecordPage({
     if (Object.keys(updates).length > 0) {
       setRecordTitlesByTemplateId((prev) => ({ ...prev, ...updates }));
     }
-  }, [selectedPatient, generatedDraft, templatesMapQuery.data]);
+  }, [generatedDraft, templatesMapQuery.data]);
 
   const canSendEmr = user?.role === "admin" || user?.verificationStatus === "verified";
 
@@ -304,6 +426,306 @@ export default function VoiceRecordPage({
       ...prev,
     ]);
   }, []);
+
+  const stopLiveSpeechRecognition = useCallback((nextStatus: LiveTranscriptStatus = "stopped") => {
+    const recognition = speechRecognitionRef.current;
+    setLiveInterimTranscript("");
+    if (!recognition) {
+      setLiveTranscriptStatus((prev) =>
+        prev === "unsupported" || prev === "error" ? prev : nextStatus,
+      );
+      return;
+    }
+    recognition.onend = null;
+    recognition.onerror = null;
+    recognition.onresult = null;
+    try {
+      recognition.stop();
+    } catch {
+      // 이미 종료된 경우 브라우저가 예외를 던질 수 있습니다.
+    }
+    speechRecognitionRef.current = null;
+    setLiveTranscriptStatus(nextStatus);
+  }, []);
+
+  const startLiveSpeechRecognition = useCallback((opts?: { reset?: boolean }) => {
+    const Recognition =
+      window.SpeechRecognition ?? window.webkitSpeechRecognition;
+    if (opts?.reset) {
+      setLiveTranscript("");
+    }
+    liveSttProviderRef.current = "browser";
+    setLiveInterimTranscript("");
+    if (!Recognition) {
+      liveSttProviderRef.current = "idle";
+      setLiveTranscriptStatus("unsupported");
+      setLiveTranscriptNotice(
+        "이 브라우저는 실시간 전사를 지원하지 않습니다. 완료 후 서버 STT로 전사됩니다.",
+      );
+      return;
+    }
+
+    const recognition = new Recognition();
+    recognition.lang = "ko-KR";
+    recognition.continuous = true;
+    recognition.interimResults = true;
+    recognition.onresult = (event) => {
+      let finalText = "";
+      let interimText = "";
+      for (let i = event.resultIndex; i < event.results.length; i += 1) {
+        const result = event.results[i];
+        const transcript = String(result?.[0]?.transcript ?? "");
+        if (!transcript) continue;
+        if (result.isFinal) finalText += transcript;
+        else interimText += transcript;
+      }
+      if (finalText) {
+        setLiveTranscript((prev) => appendTranscript(prev, finalText));
+      }
+      setLiveInterimTranscript(interimText.trim());
+    };
+    recognition.onerror = () => {
+      setLiveTranscriptStatus("error");
+      setLiveTranscriptNotice(
+        "실시간 전사가 일시 중단되었습니다. 녹음 완료 후 서버 STT로 다시 처리됩니다.",
+      );
+    };
+    recognition.onend = () => {
+      if (recordingStateRef.current === "recording") {
+        try {
+          recognition.start();
+        } catch {
+          // 일부 브라우저는 빠른 재시작을 막습니다.
+        }
+      }
+    };
+    try {
+      recognition.start();
+      speechRecognitionRef.current = recognition;
+      setLiveTranscriptStatus("listening");
+      setLiveTranscriptNotice(
+        "실시간 서버 연결이 어려워 브라우저 전사를 사용합니다. 완료 후 서버 STT로 확정 처리됩니다.",
+      );
+    } catch {
+      liveSttProviderRef.current = "idle";
+      setLiveTranscriptStatus("error");
+      setLiveTranscriptNotice(
+        "실시간 전사를 시작하지 못했습니다. 녹음 완료 후 서버 STT로 처리됩니다.",
+      );
+    }
+  }, []);
+
+  const stopWhisperLiveKitTranscription = useCallback(
+    (nextStatus: LiveTranscriptStatus = "stopped") => {
+      const socket = liveSttSocketRef.current;
+      liveSocketClosingRef.current = true;
+      pendingLiveAudioChunksRef.current = [];
+      if (socket) {
+        socket.onopen = null;
+        socket.onmessage = null;
+        socket.onerror = null;
+        socket.onclose = null;
+        try {
+          if (socket.readyState === WebSocket.OPEN) {
+            socket.send(new ArrayBuffer(0));
+          }
+          if (
+            socket.readyState === WebSocket.OPEN ||
+            socket.readyState === WebSocket.CONNECTING
+          ) {
+            socket.close(1000, "recording stopped");
+          }
+        } catch {
+          // 종료 중 발생하는 네트워크 예외는 무시합니다.
+        }
+      }
+      liveSttSocketRef.current = null;
+      if (liveSttProviderRef.current === "whisperlivekit") {
+        liveSttProviderRef.current = "idle";
+        setLiveInterimTranscript("");
+        setLiveTranscriptStatus(nextStatus);
+      }
+      window.setTimeout(() => {
+        liveSocketClosingRef.current = false;
+      }, 0);
+    },
+    [],
+  );
+
+  const sendLiveAudioChunk = useCallback((chunk: Blob) => {
+    const socket = liveSttSocketRef.current;
+    if (!socket || liveSttProviderRef.current !== "whisperlivekit") return;
+
+    if (socket.readyState === WebSocket.OPEN) {
+      socket.send(chunk);
+      return;
+    }
+
+    if (socket.readyState === WebSocket.CONNECTING) {
+      pendingLiveAudioChunksRef.current = [
+        ...pendingLiveAudioChunksRef.current.slice(-8),
+        chunk,
+      ];
+    }
+  }, []);
+
+  const startWhisperLiveKitTranscription = useCallback(
+    (opts?: { reset?: boolean }): boolean => {
+      if (opts?.reset) {
+        setLiveTranscript("");
+      }
+      setLiveInterimTranscript("");
+      setLiveTranscriptNotice("실시간 전사 서버에 연결 중입니다.");
+      setLiveTranscriptStatus("connecting");
+      pendingLiveAudioChunksRef.current = [];
+      liveSocketClosingRef.current = false;
+
+      try {
+        const socket = new WebSocket(buildWhisperLiveKitSocketUrl());
+        let opened = false;
+        liveSttProviderRef.current = "whisperlivekit";
+        liveSttSocketRef.current = socket;
+
+        socket.onopen = () => {
+          opened = true;
+          setLiveTranscriptStatus("listening");
+          setLiveTranscriptNotice("");
+          const pending = pendingLiveAudioChunksRef.current;
+          pendingLiveAudioChunksRef.current = [];
+          for (const chunk of pending) {
+            if (socket.readyState !== WebSocket.OPEN) break;
+            socket.send(chunk);
+          }
+        };
+
+        socket.onmessage = (event) => {
+          if (typeof event.data !== "string") return;
+          let payload: WhisperLiveMessage;
+          try {
+            payload = JSON.parse(event.data) as WhisperLiveMessage;
+          } catch {
+            return;
+          }
+          if (payload.type === "config") return;
+          if (payload.type === "ready_to_stop") {
+            setLiveInterimTranscript("");
+            return;
+          }
+          if (payload.error) {
+            setLiveTranscriptStatus("error");
+            setLiveTranscriptNotice(
+              `실시간 전사 서버 오류: ${payload.error}. 완료 후 서버 STT로 다시 처리됩니다.`,
+            );
+            return;
+          }
+          const committedText = textFromWhisperLiveLines(payload.lines);
+          if (committedText) {
+            setLiveTranscript(committedText);
+          } else if (payload.new_lines?.length) {
+            const newText = textFromWhisperLiveLines(payload.new_lines);
+            if (newText) setLiveTranscript((prev) => appendTranscript(prev, newText));
+          }
+          setLiveInterimTranscript(
+            String(payload.buffer_transcription ?? payload.buffer_diarization ?? "").trim(),
+          );
+          if (payload.status === "no_audio_detected") {
+            setLiveTranscriptNotice("음성이 감지되면 전사가 시작됩니다.");
+          } else if (payload.status === "active_transcription") {
+            setLiveTranscriptNotice("");
+          }
+        };
+
+        socket.onerror = () => {
+          if (liveSocketClosingRef.current) return;
+          if (!opened) {
+            liveSttSocketRef.current = null;
+            pendingLiveAudioChunksRef.current = [];
+            startLiveSpeechRecognition({ reset: false });
+            return;
+          }
+          setLiveTranscriptStatus("error");
+          setLiveTranscriptNotice(
+            "실시간 전사 서버 연결이 끊겼습니다. 완료 후 서버 STT로 확정 처리됩니다.",
+          );
+        };
+
+        socket.onclose = () => {
+          if (liveSttSocketRef.current === socket) {
+            liveSttSocketRef.current = null;
+          }
+          pendingLiveAudioChunksRef.current = [];
+          if (liveSocketClosingRef.current) return;
+          if (!opened && recordingStateRef.current === "recording") {
+            startLiveSpeechRecognition({ reset: false });
+            return;
+          }
+          if (recordingStateRef.current === "recording") {
+            setLiveTranscriptStatus("error");
+            setLiveTranscriptNotice(
+              "실시간 전사 서버 연결이 종료되었습니다. 완료 후 서버 STT로 확정 처리됩니다.",
+            );
+          }
+        };
+        return true;
+      } catch {
+        liveSttProviderRef.current = "idle";
+        liveSttSocketRef.current = null;
+        startLiveSpeechRecognition({ reset: false });
+        return false;
+      }
+    },
+    [startLiveSpeechRecognition],
+  );
+
+  const startLiveTranscription = useCallback(
+    (opts?: { reset?: boolean }) => {
+      if (liveSttSocketRef.current) {
+        stopWhisperLiveKitTranscription("idle");
+      }
+      if (speechRecognitionRef.current) {
+        stopLiveSpeechRecognition("idle");
+      }
+      startWhisperLiveKitTranscription(opts);
+    },
+    [
+      startWhisperLiveKitTranscription,
+      stopLiveSpeechRecognition,
+      stopWhisperLiveKitTranscription,
+    ],
+  );
+
+  const pauseLiveTranscription = useCallback(() => {
+    if (liveSttProviderRef.current === "whisperlivekit") {
+      setLiveTranscriptStatus("paused");
+      return;
+    }
+    stopLiveSpeechRecognition("paused");
+  }, [stopLiveSpeechRecognition]);
+
+  const resumeLiveTranscription = useCallback(() => {
+    const socket = liveSttSocketRef.current;
+    if (
+      liveSttProviderRef.current === "whisperlivekit" &&
+      socket &&
+      (socket.readyState === WebSocket.OPEN ||
+        socket.readyState === WebSocket.CONNECTING)
+    ) {
+      setLiveTranscriptStatus(
+        socket.readyState === WebSocket.OPEN ? "listening" : "connecting",
+      );
+      return;
+    }
+    startLiveTranscription();
+  }, [startLiveTranscription]);
+
+  const stopLiveTranscription = useCallback(
+    (nextStatus: LiveTranscriptStatus = "stopped") => {
+      stopWhisperLiveKitTranscription(nextStatus);
+      stopLiveSpeechRecognition(nextStatus);
+      liveSttProviderRef.current = "idle";
+    },
+    [stopLiveSpeechRecognition, stopWhisperLiveKitTranscription],
+  );
 
   const generateDraftFromAudio = useCallback(
     async (
@@ -508,11 +930,12 @@ export default function VoiceRecordPage({
       if (streamRef.current) {
         streamRef.current.getTracks().forEach((t) => t.stop());
       }
+      stopLiveTranscription();
       if (audioPlaybackUrl) {
         URL.revokeObjectURL(audioPlaybackUrl);
       }
     };
-  }, [audioPlaybackUrl]);
+  }, [audioPlaybackUrl, stopLiveTranscription]);
 
   const startNewRecording = useCallback(async () => {
     try {
@@ -527,6 +950,7 @@ export default function VoiceRecordPage({
       recorder.ondataavailable = (event) => {
         if (event.data.size > 0) {
           chunksRef.current.push(event.data);
+          sendLiveAudioChunk(event.data);
         }
       };
 
@@ -559,15 +983,16 @@ export default function VoiceRecordPage({
         await generateDraftFromAudio(file, "recording", duration);
       };
 
-      recorder.start();
+      recorder.start(500);
       setRecordingSec(0);
       setRecordingState("recording");
+      startLiveTranscription({ reset: true });
     } catch {
       setError(
         "마이크 권한이 필요합니다. 브라우저 설정에서 마이크 접근을 허용해 주세요.",
       );
     }
-  }, [generateDraftFromAudio]);
+  }, [generateDraftFromAudio, sendLiveAudioChunk, startLiveTranscription]);
 
   const toggleRecording = useCallback(async () => {
     const recorder = mediaRecorderRef.current;
@@ -579,22 +1004,28 @@ export default function VoiceRecordPage({
     if (recordingState === "recording" && recorder.state === "recording") {
       recorder.pause();
       setRecordingState("paused");
+      pauseLiveTranscription();
       return;
     }
 
     if (recordingState === "paused" && recorder.state === "paused") {
       recorder.resume();
       setRecordingState("recording");
+      resumeLiveTranscription();
     }
-  }, [recordingState, startNewRecording]);
+  }, [pauseLiveTranscription, recordingState, resumeLiveTranscription, startNewRecording]);
 
   const cancelRecording = useCallback(() => {
     const recorder = mediaRecorderRef.current;
     shouldGenerateOnStopRef.current = false;
     completedDurationRef.current = 0;
+    setLiveTranscript("");
+    setLiveInterimTranscript("");
+    setLiveTranscriptNotice("");
 
     if (recorder && recorder.state !== "inactive") {
       recorder.stop();
+      stopLiveTranscription("idle");
     } else {
       setRecordingState("idle");
       setRecordingSec(0);
@@ -604,8 +1035,9 @@ export default function VoiceRecordPage({
         streamRef.current = null;
       }
       mediaRecorderRef.current = null;
+      stopLiveTranscription("idle");
     }
-  }, []);
+  }, [stopLiveTranscription]);
 
   const completeRecording = useCallback(() => {
     const recorder = mediaRecorderRef.current;
@@ -613,12 +1045,13 @@ export default function VoiceRecordPage({
 
     shouldGenerateOnStopRef.current = true;
     completedDurationRef.current = recordingSec;
+    stopLiveTranscription("stopped");
     recorder.stop();
-  }, [recordingSec]);
+  }, [recordingSec, stopLiveTranscription]);
 
   const saveGeneratedRecordByTemplateId = useCallback(
     async (templateId: VoiceRecordTemplateId): Promise<number> => {
-      if (!selectedPatient || !generatedDraft) {
+      if (!generatedDraft) {
         throw new Error("저장할 초안이 없습니다.");
       }
       const values = generatedDraft.draftsByTemplateId[templateId];
@@ -653,7 +1086,6 @@ export default function VoiceRecordPage({
         throw new Error(`「${templateId}」기록 제목을 입력해 주세요.`);
       }
       const created = await createRecordMutation.mutateAsync({
-        patientId: selectedPatient.id,
         body: {
           recordType: templateId,
           documentNumber,
@@ -667,7 +1099,6 @@ export default function VoiceRecordPage({
       return created.id;
     },
     [
-      selectedPatient,
       generatedDraft,
       attachedFile,
       recordTitlesByTemplateId,
@@ -676,7 +1107,7 @@ export default function VoiceRecordPage({
   );
 
   const saveAllGeneratedRecords = useCallback(async (): Promise<number[]> => {
-    if (!selectedPatient || !generatedDraft) {
+    if (!generatedDraft) {
       throw new Error("저장할 초안이 없습니다.");
     }
     const createdIds: number[] = [];
@@ -685,7 +1116,7 @@ export default function VoiceRecordPage({
       createdIds.push(createdId);
     }
     return createdIds;
-  }, [selectedPatient, generatedDraft, saveGeneratedRecordByTemplateId]);
+  }, [generatedDraft, saveGeneratedRecordByTemplateId]);
 
   const clearGeneratedOutput = useCallback(() => {
     setGeneratedDraft(null);
@@ -701,11 +1132,10 @@ export default function VoiceRecordPage({
     setAudioPlaybackUrl(null);
     setCurrentPlaybackSec(0);
     setActiveSegmentId(null);
-    onPatientsRefresh();
-  }, [audioPlaybackUrl, onPatientsRefresh]);
+  }, [audioPlaybackUrl]);
 
   const handleSaveSingleGeneratedRecord = useCallback(async () => {
-    if (!selectedPatient || !generatedDraft || !activeDraftTemplateIdResolved) return;
+    if (!generatedDraft || !activeDraftTemplateIdResolved) return;
     setIsSaving(true);
     setError("");
     try {
@@ -745,7 +1175,6 @@ export default function VoiceRecordPage({
       setActiveDraftTemplateId((prev) =>
         prev === savedTemplateId ? null : prev,
       );
-      onPatientsRefresh();
       if (generatedDraft.sessionTemplateIds.length === 1) {
         clearGeneratedOutput();
       }
@@ -755,16 +1184,14 @@ export default function VoiceRecordPage({
       setIsSaving(false);
     }
   }, [
-    selectedPatient,
     generatedDraft,
     activeDraftTemplateIdResolved,
     saveGeneratedRecordByTemplateId,
-    onPatientsRefresh,
     clearGeneratedOutput,
   ]);
 
   const handleSaveAllGeneratedRecords = useCallback(async () => {
-    if (!selectedPatient || !generatedDraft) return;
+    if (!generatedDraft) return;
     setIsSaving(true);
     setError("");
     try {
@@ -775,10 +1202,10 @@ export default function VoiceRecordPage({
     } finally {
       setIsSaving(false);
     }
-  }, [selectedPatient, generatedDraft, saveAllGeneratedRecords, clearGeneratedOutput]);
+  }, [generatedDraft, saveAllGeneratedRecords, clearGeneratedOutput]);
 
   const handleSendEmrGeneratedRecord = useCallback(async () => {
-    if (!selectedPatient || !generatedDraft) return;
+    if (!generatedDraft) return;
     setIsSendingEmr(true);
     setError("");
     try {
@@ -792,7 +1219,7 @@ export default function VoiceRecordPage({
     } finally {
       setIsSendingEmr(false);
     }
-  }, [selectedPatient, generatedDraft, saveAllGeneratedRecords, clearGeneratedOutput, updateEmrMutation]);
+  }, [generatedDraft, saveAllGeneratedRecords, clearGeneratedOutput, updateEmrMutation]);
 
   const resetGeneratedSession = useCallback(() => {
     setGeneratedDraft(null);
@@ -812,6 +1239,24 @@ export default function VoiceRecordPage({
   }, [audioPlaybackUrl]);
 
   const blockingOverlay = isGenerating || isSaving || isSendingEmr;
+  const liveStatusMeta = useMemo(() => {
+    if (recordingState === "recording") {
+      return { label: "듣는 중", dot: "bg-[#EF4444]", text: "text-[#EF4444]" };
+    }
+    if (recordingState === "paused") {
+      return { label: "일시정지", dot: "bg-[#F59E0B]", text: "text-[#B45309]" };
+    }
+    if (liveTranscriptStatus === "connecting") {
+      return { label: "연결 중", dot: "bg-[#3B82F6]", text: "text-[#2563EB]" };
+    }
+    if (liveTranscriptStatus === "unsupported") {
+      return { label: "미지원", dot: "bg-[#9CA3AF]", text: "text-[#6B7280]" };
+    }
+    if (liveTranscriptStatus === "error") {
+      return { label: "중단됨", dot: "bg-[#EF4444]", text: "text-[#EF4444]" };
+    }
+    return { label: "대기", dot: "bg-[#9CA3AF]", text: "text-[#6B7280]" };
+  }, [liveTranscriptStatus, recordingState]);
 
   useEffect(() => {
     if (!generatedDraft || generatedDraft.sttSegments.length === 0) {
@@ -846,8 +1291,86 @@ export default function VoiceRecordPage({
     return () => clearInterval(id);
   }, [blockingOverlay]);
 
+  useEffect(() => {
+    const el = liveTranscriptScrollRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+  }, [liveTranscript, liveInterimTranscript]);
+
+  if (flowStep === "templates" && !generatedDraft && !isGenerating) {
+    return (
+      <div className="mx-auto flex min-h-[calc(100dvh-7.5rem)] w-full max-w-[720px] flex-col text-left lg:max-w-none">
+        <div className="mb-7">
+          <div className="mb-10 h-2 rounded-full bg-[#E5E7EB]">
+            <div className="h-full w-1/3 rounded-full bg-[#1179FF]" />
+          </div>
+          <h1 className="text-[26px] font-bold leading-tight text-[#111827] sm:text-3xl">
+            생성할 서식을 선택해주세요
+          </h1>
+          <p className="mt-3 text-[15px] leading-6 text-[#6B7280]">
+            여러 서식을 동시에 생성할 수 있어요 (최대 3개)
+          </p>
+        </div>
+
+        <div className="flex flex-col gap-2.5 pb-36">
+          {availableTemplates.map((templateId) => {
+            const selected = selectedTemplates.includes(templateId);
+            const disabled = !selected && selectedTemplates.length >= 3;
+            return (
+              <button
+                key={templateId}
+                type="button"
+                disabled={disabled}
+                onClick={() => toggleTemplateSelection(templateId)}
+                className={`flex min-h-[56px] items-center justify-between rounded-xl border bg-white px-4 text-left shadow-sm transition active:scale-[0.99] ${
+                  selected
+                    ? "border-[#3B82F6] ring-2 ring-[#DBEAFE]"
+                    : "border-[#E5E7EB]"
+                } ${disabled ? "opacity-45" : ""}`}
+              >
+                <span className="text-[15px] font-semibold text-[#20242C]">
+                  {classificationLabelForTemplate(templateId, templatesMapQuery.data)}
+                </span>
+                <span
+                  className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-full border-2 ${
+                    selected
+                      ? "border-[#3B82F6] bg-[#3B82F6] text-white"
+                      : "border-[#8D939E] bg-white"
+                  }`}
+                >
+                  {selected ? <Check className="h-3.5 w-3.5" strokeWidth={3} /> : null}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+
+        {error ? <p className="mt-4 text-sm text-red-600">{error}</p> : null}
+
+        <div className="fixed inset-x-0 bottom-[calc(var(--nursing-mobile-tabbar-height)-0.75rem)] z-20 border-t border-[#E5E7EB] bg-white/95 px-5 pb-3 pt-3 shadow-[0_-8px_18px_rgba(17,24,39,0.08)] backdrop-blur lg:left-[100px] lg:bottom-0 lg:px-10">
+          <div className="mx-auto flex max-w-[720px] items-center gap-3 lg:max-w-none">
+            <div className="min-w-[4.5rem] shrink-0">
+              <p className="text-xs font-semibold text-[#6B7280]">선택</p>
+              <p className="text-sm font-bold text-[#2563EB]">
+                {selectedTemplates.length}/3개
+              </p>
+            </div>
+          <button
+            type="button"
+            disabled={selectedTemplates.length === 0}
+            onClick={goToCaptureStep}
+              className="h-12 flex-1 rounded-xl bg-[#3B82F6] text-base font-bold text-white shadow-sm transition hover:bg-[#2563EB] disabled:bg-[#EDEDED] disabled:text-[#9CA3AF]"
+          >
+            선택완료
+          </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
-    <div className="relative flex min-h-full w-full flex-col text-left">
+    <div className="relative mx-auto flex min-h-[calc(100dvh-7.5rem)] w-full max-w-[720px] flex-col text-left lg:max-w-none">
       {blockingOverlay ? (
         <div
           className="pointer-events-auto fixed inset-0 z-[200] flex items-end justify-center pb-[14vh] sm:pb-[18vh]"
@@ -885,81 +1408,67 @@ export default function VoiceRecordPage({
         </div>
       ) : null}
 
-      <div className="flex w-full max-w-none flex-1 flex-col pl-1 pt-2 sm:pl-2">
-        <h1 className="mb-5 text-xl font-bold text-gray-900 sm:mb-8 sm:text-2xl">음성기록</h1>
-
-        <div className="grid w-full grid-cols-1 items-center gap-y-4 sm:grid-cols-[auto_1fr] sm:gap-x-[100px] sm:gap-y-6">
-          <span className="shrink-0 text-sm font-medium text-gray-800">
-            환자선택
-            <span className="text-red-500" aria-hidden>
-              *
-            </span>
-          </span>
-          <div className="flex min-h-9 min-w-0 flex-wrap items-center gap-3">
-            <button
-              type="button"
-              onClick={() => setSelectModalOpen(true)}
-              className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded border border-gray-300 bg-gray-50 text-gray-800 transition-colors hover:bg-gray-100"
-              aria-label="환자 선택 열기"
-            >
-              <Plus className="h-5 w-5" />
-            </button>
-            {selectedPatient ? (
-              <p className="min-w-0 text-sm text-gray-800">
-                <span className="font-semibold text-gray-900">
-                  {selectedPatient.name}
-                </span>
-                <span className="mx-2 text-gray-400">|</span>
-                등록 {selectedPatient.patientNumber}
-                <span className="mx-2 text-gray-400">|</span>
-                {selectedPatient.roomNumber}
-              </p>
-            ) : null}
-          </div>
-
-          <span className="shrink-0 text-sm font-medium text-gray-800">
-            기록지 선택
-            <span className="ml-1 text-xs font-normal text-gray-500">(최대 3개)</span>
-          </span>
-          <div
-            className="flex min-h-9 min-w-0 flex-wrap items-center gap-2 sm:flex-1 sm:max-w-xl"
-            role="group"
-            aria-label="간호기록 기록지 선택"
+      <div className="flex w-full max-w-none flex-1 flex-col pt-1">
+        <div className="mb-6 h-2 rounded-full bg-[#E5E7EB]">
+          <div className="h-full w-3/5 rounded-full bg-[#1179FF]" />
+        </div>
+        <div className="mb-6 grid grid-cols-[auto_1fr_auto] items-center gap-3 border-b border-[#E5E7EB] pb-6">
+          <button
+            type="button"
+            onClick={() => {
+              if (recordingState !== "idle") return;
+              setFlowStep("templates");
+              setError("");
+            }}
+            disabled={recordingState !== "idle" || isGenerating || isSaving}
+            className="inline-flex h-11 w-11 items-center justify-center rounded-full text-[#1179FF] disabled:text-[#D1D5DB]"
+            aria-label="서식 선택으로 돌아가기"
           >
-            <button
-              type="button"
-              onClick={() => setTemplateModalOpen(true)}
-              disabled={templateSelectionLocked}
-              className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded border border-gray-300 bg-gray-50 text-gray-800 transition-colors hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-60"
-              aria-label="기록지 추가"
-            >
-              <Plus className="h-5 w-5" />
-            </button>
-            {selectedTemplates.map((tid) => (
-              <span
-                key={tid}
-                className="inline-flex max-w-full items-center gap-1 rounded-full border border-gray-200 bg-gray-50 py-1 pl-3 pr-1 text-sm text-gray-900"
-              >
-                <span className="min-w-0 truncate" title={tid}>
-                  {tid}
-                </span>
-                <button
-                  type="button"
-                  disabled={templateSelectionLocked}
-                  onClick={() =>
-                    setSelectedTemplates((prev) => prev.filter((t) => t !== tid))
-                  }
-                  className="inline-flex shrink-0 rounded-full p-1 text-gray-500 transition-colors hover:bg-gray-200 hover:text-gray-800 disabled:cursor-not-allowed disabled:opacity-50"
-                  aria-label={`${tid} 제거`}
-                >
-                  <X className="h-4 w-4" strokeWidth={2} />
-                </button>
-              </span>
-            ))}
-          </div>
+            <ChevronLeft className="h-7 w-7" strokeWidth={2.25} />
+          </button>
+          <h1 className="text-center text-[26px] font-bold leading-tight text-[#20242C]">
+            음성 기록
+          </h1>
+          <span className="h-11 w-11" aria-hidden />
         </div>
 
-        <div className="my-6 w-full border-t border-gray-200" role="separator" />
+        <div className="mb-6 flex flex-wrap gap-2">
+          {selectedTemplateLabels.map((label) => (
+            <span
+              key={label}
+              className="rounded-full bg-[#EFF6FF] px-4 py-2 text-sm font-bold text-[#1179FF]"
+            >
+              {label}
+            </span>
+          ))}
+        </div>
+
+        <div className="mb-8 grid grid-cols-2 rounded-lg bg-[#F3F4F6] p-1 text-sm font-bold text-[#6B7280]">
+          <button
+            type="button"
+            onClick={() => setInputMode("record")}
+            disabled={recordingState !== "idle" || isGenerating}
+            className={`h-11 rounded-md transition ${
+              inputMode === "record"
+                ? "bg-white text-[#20242C] shadow-sm"
+                : "text-[#6B7280]"
+            }`}
+          >
+            직접 녹음
+          </button>
+          <button
+            type="button"
+            onClick={() => setInputMode("upload")}
+            disabled={recordingState !== "idle" || isGenerating}
+            className={`h-11 rounded-md transition ${
+              inputMode === "upload"
+                ? "bg-white text-[#20242C] shadow-sm"
+                : "text-[#6B7280]"
+            }`}
+          >
+            파일 업로드
+          </button>
+        </div>
 
         <input
           ref={fileInputRef}
@@ -970,10 +1479,6 @@ export default function VoiceRecordPage({
             const file = e.target.files?.[0];
             e.target.value = "";
             if (!file) return;
-            if (!selectedPatient) {
-              setError("먼저 환자를 선택해 주세요.");
-              return;
-            }
             if (selectedTemplates.length === 0) {
               setError("템플릿을 하나 이상 선택해 주세요.");
               return;
@@ -982,26 +1487,77 @@ export default function VoiceRecordPage({
           }}
         />
 
-        <div className="mb-6 grid w-full flex-1 gap-4 lg:grid-cols-4 lg:items-start">
-          <div className="min-w-0 space-y-4 lg:col-span-3">
-            {!generatedDraft ? (
-              <div className="flex w-full justify-start">
-                {!isGenerating ? (
-                  <button
-                    type="button"
-                    disabled={!canStartVoiceCapture || isGenerating}
-                    onClick={() => fileInputRef.current?.click()}
-                    className="inline-flex min-h-[40px] min-w-[80px] shrink-0 items-center justify-center gap-1.5 rounded-xl bg-blue-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-gray-300 disabled:text-gray-500"
-                  >
-                    <Upload className="h-4 w-4 shrink-0" strokeWidth={2} />
-                    파일 첨부
-                  </button>
-                ) : null}
-              </div>
-            ) : null}
+        {!generatedDraft && inputMode === "record" ? (
+          <section className="mb-3 flex flex-col items-center">
+            <div className="mt-3 text-[56px] font-bold leading-none tracking-tight text-[#20242C] sm:text-[88px]">
+              {formatDuration(recordingSec)}
+            </div>
+            <div className="mt-8 flex h-5 items-center justify-center gap-2">
+              {Array.from({ length: 28 }).map((_, index) => {
+                const active = recordingState === "recording" && index % 5 !== 0;
+                return (
+                  <span
+                    key={index}
+                    className={`rounded-full ${
+                      active ? "h-2 w-1.5 bg-[#3B82F6]" : "h-1.5 w-1.5 bg-[#D1D5DB]"
+                    }`}
+                  />
+                );
+              })}
+            </div>
+            <button
+              type="button"
+              disabled={!canStartVoiceCapture || isGenerating}
+              onClick={toggleRecording}
+              className={`mt-6 flex h-28 w-28 items-center justify-center rounded-full text-white shadow-[0_0_0_10px_rgba(239,68,68,0.10)] transition active:scale-95 sm:h-36 sm:w-36 ${
+                recordingState === "recording"
+                  ? "bg-[#EF4444]"
+                  : "bg-[#DBEAFE] text-[#20242C]"
+              } disabled:bg-[#E5E7EB] disabled:text-[#9CA3AF]`}
+              aria-label={recordingState === "recording" ? "녹음 일시정지" : "녹음 시작"}
+            >
+              {recordingState === "recording" ? (
+                <Pause className="h-11 w-11 sm:h-14 sm:w-14" fill="currentColor" strokeWidth={0} />
+              ) : (
+                <Mic className="h-12 w-12 sm:h-16 sm:w-16" strokeWidth={1.8} />
+              )}
+            </button>
+            <p className="mt-3 text-base text-[#6B7280] sm:text-lg">
+              {recordingState === "recording"
+                ? "녹음 중..."
+                : recordingState === "paused"
+                  ? "탭하여 녹음 재개"
+                  : "탭하여 녹음 시작"}
+            </p>
+          </section>
+        ) : null}
 
-            {generatedDraft && generationMeta ? (
-              <div className="rounded-xl border border-gray-200 bg-white p-5">
+        {!generatedDraft && inputMode === "upload" ? (
+          <section className="mobile-app-card mb-6 flex min-h-[320px] flex-col items-center justify-center px-6 py-10 text-center">
+            <div className="flex h-24 w-24 items-center justify-center rounded-full bg-[#EFF6FF] text-[#3B82F6]">
+              <FileUp className="h-12 w-12" strokeWidth={1.8} />
+            </div>
+            <h2 className="mt-6 text-xl font-bold text-[#20242C]">음성 파일 업로드</h2>
+            <p className="mt-2 text-sm leading-6 text-[#6B7280]">
+              녹음 파일을 업로드하면 한 번에 STT를 진행하고 선택한 서식의 초안을 생성합니다.
+            </p>
+            <button
+              type="button"
+              disabled={!canStartVoiceCapture || isGenerating}
+              onClick={() => fileInputRef.current?.click()}
+              className="mt-8 inline-flex h-12 items-center justify-center gap-2 rounded-lg bg-[#3B82F6] px-6 text-sm font-bold text-white shadow-sm hover:bg-[#2563EB] disabled:bg-gray-300"
+            >
+              <Upload className="h-4 w-4" strokeWidth={2} />
+              파일 선택
+            </button>
+          </section>
+        ) : null}
+
+        {generatedDraft ? (
+          <div className="mb-6 grid w-full flex-1 gap-4 lg:grid-cols-4 lg:items-start">
+            <div className="min-w-0 space-y-4 lg:col-span-3">
+              {generationMeta ? (
+              <div className="mobile-app-card p-5">
                 <p
                   className="truncate text-xl font-bold tracking-tight text-gray-900"
                   title={generationMeta.fileName}
@@ -1128,7 +1684,7 @@ export default function VoiceRecordPage({
                       }
                       maxLength={512}
                       className="h-10 w-full max-w-2xl rounded-lg border border-gray-200 px-3 text-sm text-gray-900"
-                      placeholder="환자명-분류-일시 형식으로 기본 채움"
+                      placeholder="분류-일시 형식으로 기본 채움"
                     />
                   </label>
                 ) : null}
@@ -1144,7 +1700,7 @@ export default function VoiceRecordPage({
                     </button>
                     <button
                       type="button"
-  disabled={!selectedPatient || isSaving || isSendingEmr || !canSendEmr}
+                      disabled={isSaving || isSendingEmr || !canSendEmr}
                       onClick={handleSendEmrGeneratedRecord}
                       className="min-h-10 rounded-lg bg-emerald-600 px-4 py-2 text-xs font-medium text-white transition-colors hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-gray-300 sm:min-h-0"
                     >
@@ -1152,7 +1708,7 @@ export default function VoiceRecordPage({
                     </button>
                     <button
                       type="button"
-                      disabled={!selectedPatient || isSaving || isSendingEmr}
+                      disabled={isSaving || isSendingEmr}
                       onClick={handleSaveSingleGeneratedRecord}
                       className="min-h-10 rounded-lg border border-blue-200 bg-blue-50 px-4 py-2 text-xs font-medium text-blue-700 transition-colors hover:bg-blue-100 disabled:cursor-not-allowed disabled:bg-gray-100 disabled:text-gray-400 sm:min-h-0"
                     >
@@ -1160,7 +1716,7 @@ export default function VoiceRecordPage({
                     </button>
                     <button
                       type="button"
-                      disabled={!selectedPatient || isSaving || isSendingEmr}
+                      disabled={isSaving || isSendingEmr}
                       onClick={handleSaveAllGeneratedRecords}
                       className="min-h-10 rounded-lg bg-blue-600 px-4 py-2 text-xs font-medium text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-gray-300 sm:min-h-0"
                     >
@@ -1194,9 +1750,6 @@ export default function VoiceRecordPage({
                               <TemplateFieldControl
                                 field={field}
                                 templateId={tid}
-                                patientId={
-                                  selectedPatient ? Number(selectedPatient.id) : undefined
-                                }
                                 value={
                                   generatedDraft.draftsByTemplateId[tid]?.[
                                     field.storageKey
@@ -1226,11 +1779,11 @@ export default function VoiceRecordPage({
                     : null}
                 </div>
               </div>
-            ) : null}
-          </div>
+              ) : null}
+            </div>
 
-          {generatedDraft && generationMeta && audioPlaybackUrl ? (
-            <aside className="max-h-[min(100vh,800px)] min-h-0 overflow-y-auto overscroll-contain rounded-xl border border-gray-200 bg-white p-4 lg:col-span-1">
+            {generationMeta && audioPlaybackUrl ? (
+              <aside className="mobile-app-card max-h-[min(100vh,800px)] min-h-0 overflow-y-auto overscroll-contain p-4 lg:col-span-1">
               <div className="mb-3">
                 <p
                   className="truncate text-lg font-semibold text-gray-900"
@@ -1265,75 +1818,78 @@ export default function VoiceRecordPage({
                   className="max-h-[calc(100vh-22rem)] space-y-1.5 overflow-y-auto pr-1"
                 />
               </div>
-            </aside>
-          ) : null}
-        </div>
+              </aside>
+            ) : null}
+          </div>
+        ) : null}
 
         {error ? <p className="mt-2 text-sm text-red-600">{error}</p> : null}
 
         <div className="flex-1" aria-hidden />
       </div>
 
-      {!generatedDraft && !isGenerating && !isSaving ? (
-        <div
-          className="mt-auto w-full border-t border-gray-200 bg-white/95 px-0 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] backdrop-blur-sm sm:px-2 sm:py-4 sm:pb-4"
-          role="region"
-          aria-label="녹음"
-        >
+      {!generatedDraft && inputMode === "record" && !isGenerating && !isSaving ? (
+        <section className="-mt-5 mb-[var(--nursing-mobile-tabbar-height)] overflow-hidden rounded-t-3xl border border-[#E5E7EB] bg-white shadow-[0_-4px_12px_rgba(17,24,39,0.05)] lg:mb-0 lg:mt-auto">
+          <div className="mx-auto mt-1 h-1 w-20 rounded-full bg-[#D1D5DB] sm:h-1.5 sm:w-24" />
+          <div className="flex items-center justify-between border-b border-[#E5E7EB] px-5 py-2.5 sm:py-3">
+            <h2 className="text-base font-bold text-[#111827] sm:text-xl">실시간 전사</h2>
+            <span className={`inline-flex items-center gap-1.5 rounded-full bg-[#F3F4F6] px-2.5 py-1 text-xs font-bold ${liveStatusMeta.text}`}>
+              <span className={`h-2 w-2 rounded-full ${liveStatusMeta.dot}`} />
+              {liveStatusMeta.label}
+            </span>
+          </div>
           <div
-            className="mx-auto flex w-full max-w-full flex-wrap items-center justify-center gap-x-2 gap-y-2 rounded-[9999px] border border-gray-200 bg-gray-50 px-3 py-2.5 shadow-sm sm:w-[30%] sm:min-w-[280px] sm:max-w-[480px] sm:justify-between sm:gap-x-3 sm:px-4 sm:py-3"
+            ref={liveTranscriptScrollRef}
+            className="max-h-[78px] min-h-[78px] overflow-y-auto px-5 py-3 sm:max-h-[220px] sm:min-h-[178px] sm:px-7 sm:py-8"
+            aria-live="polite"
           >
-            <div className="min-w-[64px] shrink-0 text-sm font-semibold tabular-nums text-gray-800">
-              {formatDuration(recordingSec)}
-            </div>
-
+            {liveTranscript || liveInterimTranscript ? (
+              <p className="whitespace-pre-wrap text-[15px] leading-6 text-[#20242C] sm:text-[18px] sm:leading-8">
+                {liveTranscript}
+                {liveInterimTranscript ? (
+                  <span className="text-[#6B7280]"> {liveInterimTranscript}</span>
+                ) : null}
+              </p>
+            ) : (
+              <div className="flex min-h-[72px] flex-col items-center justify-center text-center sm:min-h-[120px]">
+                <div className="flex h-9 w-9 items-center justify-center rounded-full bg-[#F3F4F6] text-[#9CA3AF] sm:h-16 sm:w-16">
+                  <Mic className="h-5 w-5 sm:h-8 sm:w-8" strokeWidth={1.8} />
+                </div>
+                <p className="mt-2 text-xs font-medium text-[#9CA3AF] sm:mt-6 sm:text-base">
+                  녹음이 시작되면 여기에 전사가 표시됩니다
+                </p>
+                <p className="mt-1 text-[11px] text-[#9CA3AF] sm:mt-2 sm:text-xs">
+                  완료 후 서버 STT로 다시 확정 처리합니다.
+                </p>
+              </div>
+            )}
+            {liveTranscriptNotice ? (
+              <p className="mt-4 rounded-lg bg-[#EFF6FF] px-3 py-2 text-xs text-[#2563EB]">
+                {liveTranscriptNotice}
+              </p>
+            ) : null}
+          </div>
+          <div className="grid grid-cols-2 gap-2 border-t border-[#E5E7EB] px-6 py-2">
             <button
               type="button"
-              disabled={!canStartVoiceCapture || isGenerating}
-              onClick={toggleRecording}
-              className={`inline-flex h-11 min-w-[120px] shrink-0 flex-1 items-center justify-center rounded-full px-4 text-sm font-semibold text-white transition-colors sm:h-12 sm:min-w-[140px] sm:flex-none sm:px-6 ${
-                recordingState === "recording"
-                  ? "bg-gray-700 hover:bg-gray-800"
-                  : "bg-red-600 hover:bg-red-700"
-              } disabled:cursor-not-allowed disabled:bg-gray-300`}
+              disabled={recordingState === "idle" || isGenerating}
+              onClick={cancelRecording}
+              className="h-11 rounded-2xl border border-[#E5E7EB] bg-white text-base font-bold text-[#111827] disabled:text-[#D1D5DB] sm:h-14 sm:text-lg"
             >
-              {recordingState === "recording"
-                ? "일시정지"
-                : recordingState === "paused"
-                  ? "녹음 재개"
-                  : "녹음 시작"}
+              취소
             </button>
-
-            <div className="flex shrink-0 items-center gap-1.5 sm:gap-2">
-              <button
-                type="button"
-                disabled={recordingState === "idle" || isGenerating}
-                onClick={completeRecording}
-                className="rounded-full bg-blue-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-gray-300 sm:px-3.5 sm:py-2 sm:text-sm"
-              >
-                완료
-              </button>
-              <button
-                type="button"
-                disabled={recordingState === "idle" || isGenerating}
-                onClick={cancelRecording}
-                className="rounded-full border border-gray-300 bg-white px-3 py-1.5 text-xs font-medium text-gray-700 transition-colors hover:bg-gray-50 disabled:cursor-not-allowed disabled:bg-gray-100 disabled:text-gray-400 sm:px-3.5 sm:py-2 sm:text-sm"
-              >
-                취소
-              </button>
-            </div>
+            <button
+              type="button"
+              disabled={recordingState === "idle" || isGenerating}
+              onClick={completeRecording}
+              className="h-11 rounded-2xl bg-[#3B82F6] text-base font-bold text-white disabled:bg-[#E5E7EB] disabled:text-[#9CA3AF] sm:h-14 sm:text-lg"
+            >
+              완료
+            </button>
           </div>
-        </div>
+        </section>
       ) : null}
 
-      <SelectPatientForVoiceModal
-        isOpen={selectModalOpen}
-        onClose={() => setSelectModalOpen(false)}
-        patients={patients}
-        onConfirm={(patient) => {
-          setSelectedPatient(patient);
-        }}
-      />
       <SelectVoiceRecordTemplatesModal
         isOpen={templateModalOpen}
         onClose={() => setTemplateModalOpen(false)}

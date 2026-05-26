@@ -16,7 +16,6 @@ export interface TemplateFieldControlProps {
   templateId: string;
   value: string;
   onChange: (next: string) => void;
-  patientId?: number | null;
   readOnly?: boolean;
   /** 단일행·숫자 등에 쓰는 클래스 */
   classNameInputShort?: string;
@@ -29,7 +28,6 @@ export function TemplateFieldControl({
   templateId,
   value,
   onChange,
-  patientId,
   readOnly = false,
   classNameInputShort = "h-11 w-full rounded-lg border border-gray-200 bg-white px-3 text-sm text-gray-900 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500/30",
   classNameTextarea = "min-h-[72px] w-full resize-none rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm leading-relaxed text-gray-900 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500/30 sm:min-h-[96px]",
@@ -120,7 +118,6 @@ export function TemplateFieldControl({
       <InputAssistField
         templateId={templateId}
         fieldKey={field.storageKey}
-        patientId={patientId}
         type="number"
         readOnly={readOnly}
         value={value}
@@ -216,7 +213,6 @@ export function TemplateFieldControl({
       <InputAssistField
         templateId={templateId}
         fieldKey={field.storageKey}
-        patientId={patientId}
         multiline
         rows={textareaRowsForKind(kind)}
         readOnly={readOnly}
@@ -232,7 +228,6 @@ export function TemplateFieldControl({
     <InputAssistField
       templateId={templateId}
       fieldKey={field.storageKey}
-      patientId={patientId}
       readOnly={readOnly}
       value={value}
       onChange={onChange}

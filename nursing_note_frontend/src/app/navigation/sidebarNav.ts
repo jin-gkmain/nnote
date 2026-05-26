@@ -1,8 +1,6 @@
 export type SidebarNavId =
   | "home"
   | "voice"
-  | "aiCreate"
-  | "aiSummary"
   | "ocr"
   | "records"
   | "settings";
@@ -14,8 +12,7 @@ export function getSidebarActiveId(pathname: string): SidebarNavId {
     return "records";
   }
   if (pathname.startsWith("/voice")) return "voice";
-  if (pathname.startsWith("/ai/create")) return "aiCreate";
-  if (pathname.startsWith("/ai/summary")) return "aiSummary";
+  if (pathname.startsWith("/ai")) return "records";
   if (pathname.startsWith("/ocr")) return "ocr";
   if (pathname.startsWith("/settings")) return "settings";
   return "home";

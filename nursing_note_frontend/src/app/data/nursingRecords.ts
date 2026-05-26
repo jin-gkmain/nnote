@@ -1,17 +1,4 @@
 import { authFetch } from "@/app/data/auth-api";
-// 간호기록 타입 정의
-export interface NursingRecord {
-  id: string;
-  date: string;
-  time: string;
-  documentNumber: string;
-  /** record_type(템플릿·레거시 분류) */
-  category: string;
-  /** 사용자 지정 기록 제목 */
-  title: string;
-  soapie: string;
-  checked: boolean;
-}
 
 /**
  * 프론트 표기용 날짜(예: "2026. 2. 11")를 API용 YYYY-MM-DD로 변환
@@ -41,27 +28,11 @@ export function toRecordTime(timeStr: string): string {
 }
 
 /**
- * 환자별 전체 기록 조회 (API 호출)
- * - 백엔드에서 3종 기록(간호기록/인계/임상관찰)을 합쳐서 반환
- */
-export const fetchPatientRecords = async (
-  patientId: string,
-): Promise<NursingRecord[]> => {
-  try {
-    const response = await fetch(`/api/patients/${patientId}/records`);
-    if (!response.ok) return [];
-    return await response.json();
-  } catch {
-    console.error("기록 조회 실패");
-    return [];
-  }
-};
-
-/**
  * 통합 기록 생성 — 단일 records 테이블에 JSON + record_type으로 저장
  */
+export type RecordCreationSource = "manual" | "voice" | "ai" | "ocr" | "record_based";
+
 export const createRecord = async (
-  patientId: string,
   body: {
     recordType: string;
     documentNumber: string;
@@ -70,14 +41,13 @@ export const createRecord = async (
     title: string;
     data: Record<string, unknown>;
     /** 통계용: 수동 / 음성기록 / AI 초안 저장 */
-    creationSource?: "manual" | "voice" | "ai" | "ocr";
+    creationSource?: RecordCreationSource;
   },
 ): Promise<{ id: number }> => {
   const response = await fetch("/api/records", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      patientId: Number(patientId),
       recordType: body.recordType,
       documentNumber: body.documentNumber,
       recordDate: body.recordDate,
@@ -149,56 +119,60 @@ export const deleteRecord = async (
   }
 };
 
-/**
- * 하위 호환을 위한 동기 함수 (빈 배열 반환)
- * 컴포넌트에서 fetchPatientRecords로 마이그레이션 완료 시 제거 예정
- */
-export const getPatientRecords = (
-  _patientId: string,
-): NursingRecord[] => {
-  return [];
-};
-
 /** 대시보드 최근 기록 API 응답 (백엔드 records/recent/*) */
 export interface DashboardRecordRow {
   id: number;
-  patientId: number;
   recordType: string;
   title: string;
   documentNumber: string;
   recordDateTime: string;
   emrSyncStatus: "pending" | "sent";
   clientRecordId: string;
-  patient: {
-    id: string;
-    patientNumber: string;
-    roomNumber: string;
-    name: string;
-    birthDate: string;
-    gender: string;
-    hasRecords: boolean;
-  };
 }
 
 export interface RecordListItem extends DashboardRecordRow {
-  creationSource: "manual" | "voice" | "ai" | "ocr";
+  creationSource: RecordCreationSource;
 }
 
 /** GET /api/records/:id */
 export interface RecordDetailResponse {
   id: number;
-  patientId: number;
   recordType: string;
   title: string;
   documentNumber: string;
   recordDate: string;
   recordTime: string;
   data: Record<string, unknown>;
-  creationSource: "manual" | "voice" | "ai" | "ocr";
+  creationSource: RecordCreationSource;
   emrSyncStatus: "pending" | "sent";
-  patient: {
-    patientNumber: string;
-    name: string;
+}
+
+export interface RecordDashboardStats {
+  totalRecords: number;
+  todayVoiceRecords: number;
+  voiceRecordsDodChange: number;
+  todayRecordBasedRecords: number;
+  recordBasedRecordsDodChange: number;
+  todayOcrRecords: number;
+  ocrRecordsDodChange: number;
+  pendingEmrRecords: number;
+  sentEmrRecords: number;
+}
+
+export async function fetchRecordDashboardStats(): Promise<RecordDashboardStats> {
+  const response = await fetch("/api/records/stats");
+  if (!response.ok) throw new Error("통계 조회 실패");
+  const raw = (await response.json()) as Partial<RecordDashboardStats>;
+  return {
+    totalRecords: raw.totalRecords ?? 0,
+    todayVoiceRecords: raw.todayVoiceRecords ?? 0,
+    voiceRecordsDodChange: raw.voiceRecordsDodChange ?? 0,
+    todayRecordBasedRecords: raw.todayRecordBasedRecords ?? 0,
+    recordBasedRecordsDodChange: raw.recordBasedRecordsDodChange ?? 0,
+    todayOcrRecords: raw.todayOcrRecords ?? 0,
+    ocrRecordsDodChange: raw.ocrRecordsDodChange ?? 0,
+    pendingEmrRecords: raw.pendingEmrRecords ?? 0,
+    sentEmrRecords: raw.sentEmrRecords ?? 0,
   };
 }
 

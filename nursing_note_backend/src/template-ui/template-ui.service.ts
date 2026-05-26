@@ -595,9 +595,21 @@ export class TemplateUiService implements OnModuleInit {
     try {
       const existing = await this.findTemplateById(conn, templateId);
       if (!existing) {
-        throw new BadRequestException(
-          '존재하지 않는 템플릿입니다. 신규 템플릿은 JSON 추가 기능으로 생성해 주세요.',
+        if (!DEFAULT_TEMPLATE_IDS.includes(templateId)) {
+          throw new BadRequestException(
+            '존재하지 않는 템플릿입니다. 신규 템플릿은 JSON 추가 기능으로 생성해 주세요.',
+          );
+        }
+        const displayTitle =
+          dto.displayTitle != null && String(dto.displayTitle).trim() !== ''
+            ? String(dto.displayTitle).trim().slice(0, 128)
+            : null;
+        await conn.query(
+          `INSERT INTO template_ui_configs (template_id, fields_json, display_title) VALUES (?, ?, ?)`,
+          [templateId, JSON.stringify(dto.sections), displayTitle],
         );
+        await conn.query('DELETE FROM template_ui_removed WHERE template_id = ?', [templateId]);
+        return { ok: true, templateId };
       }
       const json = JSON.stringify(dto.sections);
       if (dto.displayTitle !== undefined) {

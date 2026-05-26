@@ -1,48 +1,118 @@
-import { UserPlus } from "lucide-react";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import AddPatientModal from "@/app/components/AddPatientModal";
+import { ChevronRight } from "lucide-react";
+import { useNavigate } from "react-router-dom";
+import { useAuth } from "@/app/auth/auth-context";
 import { RecordDetailOverlay } from "@/app/components/record-detail-overlay";
+import { classificationLabelForTemplate } from "@/app/data/recordTitle";
 import {
   type DashboardRecordRow,
 } from "@/app/data/nursingRecords";
+import { ROUTES } from "@/app/navigation/routes";
+import type { TemplateUiConfigMap } from "@/app/data/template-field-registry";
 import { queryKeys } from "@/app/query/query-keys";
 import {
-  usePatientStatsQuery,
+  useRecordStatsQuery,
   useRecentCreatedRecordsQuery,
   useRecentUpdatedRecordsQuery,
+  useTemplatesMapQuery,
 } from "@/app/query/use-app-query";
-
-function formatSignedDelta(n: number): string {
-  if (n === 0) return "0";
-  return n > 0 ? `+${n}` : `${n}`;
-}
-
-interface DashboardProps {
-  onPatientAdded: () => void;
-}
+import { formatTodayYmd } from "@/app/utils/formatTodayYmd";
 
 function emrStatusLabel(status: DashboardRecordRow["emrSyncStatus"]): string {
-  return status === "sent" ? "EMR 전송 후" : "EMR 전송 전";
+  return status === "sent" ? "전송완료" : "미전송";
 }
 
-export default function Dashboard({ onPatientAdded }: DashboardProps) {
+function pickKeywords(records: DashboardRecordRow[], templatesMap?: TemplateUiConfigMap) {
+  const stopwords = new Set([
+    "기록",
+    "기록지",
+    "간호",
+    "음성",
+    "OCR",
+    "기반",
+    "생성",
+  ]);
+  const words = records
+    .flatMap((row) => [
+      row.title,
+      classificationLabelForTemplate(row.recordType, templatesMap),
+    ])
+    .flatMap((value) => value.split(/[\s\-_/·,()[\]]+/))
+    .map((word) => word.trim())
+    .filter((word) => word.length >= 2 && !stopwords.has(word));
+  return [...new Set(words)].slice(0, 8);
+}
+
+function RecordCard({
+  row,
+  templatesMap,
+  onOpen,
+}: {
+  row: DashboardRecordRow;
+  templatesMap?: TemplateUiConfigMap;
+  onOpen: (row: DashboardRecordRow) => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={() => onOpen(row)}
+      className="mobile-app-card w-full px-5 py-4 text-left transition-transform active:scale-[0.99]"
+    >
+      <div className="flex items-start justify-between gap-3">
+        <span
+          className={
+            row.emrSyncStatus === "sent"
+              ? "rounded-md bg-[#10B981] px-2.5 py-1 text-xs font-semibold text-white"
+              : "rounded-md border border-[#10B981] bg-[#ECFDF5] px-2.5 py-1 text-xs font-semibold text-[#059669]"
+          }
+        >
+          {emrStatusLabel(row.emrSyncStatus)}
+        </span>
+        <span className="shrink-0 text-xs text-[#9CA3AF]">{row.recordDateTime}</span>
+      </div>
+      <div className="mt-3 flex items-center text-base font-medium text-[#111827]">
+        <span className="min-w-0 truncate">
+          {row.documentNumber}-{row.title || row.recordType}
+        </span>
+        <ChevronRight className="ml-1 h-4 w-4 shrink-0 text-[#111827]" />
+      </div>
+      <p className="mt-5 text-xs text-[#9CA3AF]">
+        {classificationLabelForTemplate(row.recordType, templatesMap)}
+      </p>
+    </button>
+  );
+}
+
+export default function Dashboard() {
   const queryClient = useQueryClient();
-  const [showAddPatientModal, setShowAddPatientModal] = useState(false);
+  const navigate = useNavigate();
+  const { user } = useAuth();
   const [detailRecordId, setDetailRecordId] = useState<number | null>(null);
-  const statsQuery = usePatientStatsQuery();
+  const statsQuery = useRecordStatsQuery();
   const recentCreatedQuery = useRecentCreatedRecordsQuery(10);
   const recentUpdatedQuery = useRecentUpdatedRecordsQuery(10);
+  const templatesMapQuery = useTemplatesMapQuery();
   const recentCreated = recentCreatedQuery.data ?? [];
   const recentUpdated = recentUpdatedQuery.data ?? [];
   const stats = statsQuery.data ?? {
-    totalPatients: 0,
-    totalPatientsMomChange: 0,
+    totalRecords: 0,
     todayVoiceRecords: 0,
     voiceRecordsDodChange: 0,
-    todayAiNursingRecords: 0,
-    aiNursingRecordsDodChange: 0,
+    todayRecordBasedRecords: 0,
+    recordBasedRecordsDodChange: 0,
+    todayOcrRecords: 0,
+    ocrRecordsDodChange: 0,
+    pendingEmrRecords: 0,
+    sentEmrRecords: 0,
   };
+  const todayCreatedTotal =
+    stats.todayVoiceRecords + stats.todayRecordBasedRecords + stats.todayOcrRecords;
+  const keywords = useMemo(
+    () => pickKeywords([...recentCreated, ...recentUpdated], templatesMapQuery.data),
+    [recentCreated, recentUpdated, templatesMapQuery.data],
+  );
+  const displayName = user?.name?.trim() || user?.loginId?.trim() || "간호사";
 
   const openRecordDetail = (row: DashboardRecordRow) => {
     setDetailRecordId(row.id);
@@ -56,297 +126,117 @@ export default function Dashboard({ onPatientAdded }: DashboardProps) {
         onRecordChanged={() => {
           void queryClient.invalidateQueries({ queryKey: queryKeys.records.recentCreated(10) });
           void queryClient.invalidateQueries({ queryKey: queryKeys.records.recentUpdated(10) });
-          void queryClient.invalidateQueries({ queryKey: queryKeys.patients.stats });
+          void queryClient.invalidateQueries({ queryKey: queryKeys.records.stats });
         }}
       />
-      <div className="mb-8 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-        <h1 className="text-xl text-gray-900 md:text-2xl">
-          안녕하세요, <span className="font-bold">TEST</span>님
-        </h1>
-        <button
-          type="button"
-          onClick={() => setShowAddPatientModal(true)}
-          className="inline-flex shrink-0 items-center gap-1.5 self-start rounded-lg bg-blue-600 px-3 py-2 text-sm font-medium text-white transition-colors hover:bg-blue-700"
-        >
-          <UserPlus className="h-4 w-4" />
-          환자 추가
-        </button>
-      </div>
 
-      <div className="mb-8 grid grid-cols-1 gap-3 sm:grid-cols-2 md:gap-6 lg:grid-cols-4">
-        <div className="flex flex-col rounded-xl border border-gray-200 bg-white p-4 shadow-sm md:p-6">
-          <div className="mb-2 text-xs text-gray-600 md:text-sm">총 환자수</div>
-          <div className="flex-1 text-right text-2xl font-bold text-gray-900 md:text-4xl">
-            {stats.totalPatients}
+      <div className="mx-auto flex w-full max-w-[720px] flex-col gap-9 lg:max-w-none">
+        <section className="pt-1 lg:pt-0">
+          <p className="text-base text-[#6B7280]">안녕하세요,</p>
+          <h1 className="mt-1 text-[34px] font-bold leading-tight text-[#111827] sm:text-4xl">
+            {displayName}님
+          </h1>
+        </section>
+
+        <section>
+          <div className="mb-5 flex items-center justify-between">
+            <h2 className="text-2xl font-bold text-[#111827]">TODAY</h2>
+            <span className="text-base text-[#6B7280]">{formatTodayYmd()}</span>
           </div>
-          <div className="mt-2 border-t border-gray-100 pt-2 text-right text-xs text-gray-500">
-            전월 대비{" "}
-            <span
-              className={
-                stats.totalPatientsMomChange > 0
-                  ? "font-semibold text-emerald-600"
-                  : stats.totalPatientsMomChange < 0
-                    ? "font-semibold text-rose-600"
-                    : "font-medium text-gray-600"
-              }
-            >
-              {formatSignedDelta(stats.totalPatientsMomChange)}
-            </span>
-          </div>
-          <div className="mt-0.5 text-right text-[10px] text-gray-400">
-            현재 입원 중
-          </div>
-        </div>
-        <div className="flex flex-col rounded-xl border border-gray-200 bg-white p-4 shadow-sm md:p-6">
-          <div className="mb-2 text-xs text-gray-600 md:text-sm">
-            오늘 생성한 음성기록
-          </div>
-          <div className="flex-1 text-right text-2xl font-bold text-gray-900 md:text-4xl">
-            {stats.todayVoiceRecords}
-          </div>
-          <div className="mt-2 border-t border-gray-100 pt-2 text-right text-xs text-gray-500">
-            전일 대비{" "}
-            <span
-              className={
-                stats.voiceRecordsDodChange > 0
-                  ? "font-semibold text-emerald-600"
-                  : stats.voiceRecordsDodChange < 0
-                    ? "font-semibold text-rose-600"
-                    : "font-medium text-gray-600"
-              }
-            >
-              {formatSignedDelta(stats.voiceRecordsDodChange)}
-            </span>
-          </div>
-        </div>
-        <div className="flex flex-col rounded-xl border border-gray-200 bg-white p-4 shadow-sm md:p-6">
-          <div className="mb-2 text-xs text-gray-600 md:text-sm">
-            오늘 생성한 AI 간호기록
-          </div>
-          <div className="flex-1 text-right text-2xl font-bold text-gray-900 md:text-4xl">
-            {stats.todayAiNursingRecords}
-          </div>
-          <div className="mt-2 border-t border-gray-100 pt-2 text-right text-xs text-gray-500">
-            전일 대비{" "}
-            <span
-              className={
-                stats.aiNursingRecordsDodChange > 0
-                  ? "font-semibold text-emerald-600"
-                  : stats.aiNursingRecordsDodChange < 0
-                    ? "font-semibold text-rose-600"
-                    : "font-medium text-gray-600"
-              }
-            >
-              {formatSignedDelta(stats.aiNursingRecordsDodChange)}
-            </span>
-          </div>
-        </div>
-        <div className="flex flex-col rounded-xl border border-gray-200 bg-white p-4 shadow-sm md:p-6">
-          <div className="mb-2 text-xs text-gray-600 md:text-sm">
-            EMR 연동 상태
-          </div>
-          <div className="flex-1 text-right text-lg font-semibold text-emerald-700 md:text-xl">
-            연동 정상
-          </div>
-          <div className="mt-2 border-t border-gray-100 pt-2 text-right text-xs text-gray-500">
-            마지막 동기화: 2026-04-06 14:30
-          </div>
-          <div className="mt-0.5 text-right text-[10px] text-gray-400">
-            (데모 데이터)
-          </div>
-        </div>
-      </div>
-      <div className="grid grid-cols-1 gap-6 xl:grid-cols-2">
-        <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm md:p-6">
-          <h3 className="mb-4 text-lg font-bold text-gray-900 md:text-xl">
-            최근 생성한 기록
-          </h3>
-          <div className="w-full min-w-0">
-            <div className="dashboard-table-scroll-x -mx-1 overflow-x-auto">
-              <table className="w-full min-w-[560px] table-fixed text-sm">
-                <colgroup>
-                  <col className="w-[18%]" />
-                  <col className="w-[22%]" />
-                  <col className="w-[28%]" />
-                  <col className="w-[14%]" />
-                  <col className="w-[18%]" />
-                </colgroup>
-                <thead>
-                  <tr className="border-b border-gray-200 text-gray-600">
-                    <th className="py-2 pr-3 text-left align-middle font-medium whitespace-nowrap">
-                      기록번호
-                    </th>
-                    <th className="px-2 py-2 text-center align-middle font-medium whitespace-nowrap">
-                      기록일시
-                    </th>
-                    <th className="px-2 py-2 text-left align-middle font-medium">
-                      제목
-                    </th>
-                    <th className="px-2 py-2 text-center align-middle font-medium whitespace-nowrap">
-                      상태
-                    </th>
-                    <th className="py-2 pl-3 text-center align-middle font-medium whitespace-nowrap">
-                      상세보기
-                    </th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {recentCreated.length === 0 ? (
-                    <tr>
-                      <td
-                        colSpan={5}
-                        className="py-8 text-center text-gray-500"
-                      >
-                        생성된 기록이 없습니다.
-                      </td>
-                    </tr>
-                  ) : (
-                    recentCreated.map((row) => (
-                      <tr
-                        key={`c-${row.id}`}
-                        className="border-b border-gray-100 last:border-0"
-                      >
-                        <td className="py-3 pr-3 text-left align-middle font-medium text-gray-900">
-                          {row.documentNumber}
-                        </td>
-                        <td className="px-2 py-3 text-center align-middle whitespace-nowrap text-gray-700">
-                          {row.recordDateTime}
-                        </td>
-                        <td className="px-2 py-3 text-left align-middle text-gray-800">
-                          <span className="line-clamp-2" title={row.title}>
-                            {row.title ?? row.documentNumber}
-                          </span>
-                        </td>
-                        <td className="px-2 py-3 text-center align-middle">
-                          <span
-                            className={
-                              row.emrSyncStatus === "sent"
-                                ? "inline-flex justify-center rounded-md border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-xs font-medium text-emerald-800"
-                                : "inline-flex justify-center rounded-md border border-amber-200 bg-amber-50 px-2 py-0.5 text-xs font-medium text-amber-900"
-                            }
-                          >
-                            {emrStatusLabel(row.emrSyncStatus)}
-                          </span>
-                        </td>
-                        <td className="py-3 pl-3 text-center align-middle">
-                          <button
-                            type="button"
-                            onClick={() => openRecordDetail(row)}
-                            className="rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-600 transition-colors hover:bg-gray-100 hover:text-gray-900"
-                          >
-                            상세
-                          </button>
-                        </td>
-                      </tr>
-                    ))
-                  )}
-                </tbody>
-              </table>
+          <div className="grid grid-cols-3 gap-4">
+            <div className="mobile-app-card flex min-h-[122px] flex-col items-center justify-center px-2">
+              <div className="text-4xl font-bold text-[#3B82F6]">{todayCreatedTotal}</div>
+              <div className="mt-3 text-sm text-[#6B7280]">작성 기록</div>
+            </div>
+            <div className="mobile-app-card flex min-h-[122px] flex-col items-center justify-center px-2">
+              <div className="text-4xl font-bold text-[#3B82F6]">
+                {stats.todayRecordBasedRecords}
+              </div>
+              <div className="mt-3 text-sm text-[#6B7280]">기록기반 생성</div>
+            </div>
+            <div className="mobile-app-card flex min-h-[122px] flex-col items-center justify-center px-2">
+              <div className="text-4xl font-bold text-[#3B82F6]">{stats.sentEmrRecords}</div>
+              <div className="mt-3 text-sm text-[#6B7280]">EMR 전송</div>
             </div>
           </div>
-        </div>
+          <p className="mt-3 text-right text-xs text-[#9CA3AF]">
+            총 기록 {stats.totalRecords}건 · 미전송 {stats.pendingEmrRecords}건
+          </p>
+        </section>
 
-        <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm md:p-6">
-          <h3 className="mb-4 text-lg font-bold text-gray-900 md:text-xl">
-            최근 수정한 기록
-          </h3>
-          <div className="w-full min-w-0">
-            <div className="dashboard-table-scroll-x -mx-1 overflow-x-auto">
-              <table className="w-full min-w-[560px] table-fixed text-sm">
-                <colgroup>
-                  <col className="w-[18%]" />
-                  <col className="w-[22%]" />
-                  <col className="w-[28%]" />
-                  <col className="w-[14%]" />
-                  <col className="w-[18%]" />
-                </colgroup>
-                <thead>
-                  <tr className="border-b border-gray-200 text-gray-600">
-                    <th className="py-2 pr-3 text-left align-middle font-medium whitespace-nowrap">
-                      기록번호
-                    </th>
-                    <th className="px-2 py-2 text-center align-middle font-medium whitespace-nowrap">
-                      기록일시
-                    </th>
-                    <th className="px-2 py-2 text-left align-middle font-medium">
-                      제목
-                    </th>
-                    <th className="px-2 py-2 text-center align-middle font-medium whitespace-nowrap">
-                      상태
-                    </th>
-                    <th className="py-2 pl-3 text-center align-middle font-medium whitespace-nowrap">
-                      상세보기
-                    </th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {recentUpdated.length === 0 ? (
-                    <tr>
-                      <td
-                        colSpan={5}
-                        className="py-8 text-center text-gray-500"
-                      >
-                        수정된 기록이 없습니다.
-                      </td>
-                    </tr>
-                  ) : (
-                    recentUpdated.map((row) => (
-                      <tr
-                        key={`u-${row.id}`}
-                        className="border-b border-gray-100 last:border-0"
-                      >
-                        <td className="py-3 pr-3 text-left align-middle font-medium text-gray-900">
-                          {row.documentNumber}
-                        </td>
-                        <td className="px-2 py-3 text-center align-middle whitespace-nowrap text-gray-700">
-                          {row.recordDateTime}
-                        </td>
-                        <td className="px-2 py-3 text-left align-middle text-gray-800">
-                          <span className="line-clamp-2" title={row.title}>
-                            {row.title ?? row.documentNumber}
-                          </span>
-                        </td>
-                        <td className="px-2 py-3 text-center align-middle">
-                          <span
-                            className={
-                              row.emrSyncStatus === "sent"
-                                ? "inline-flex justify-center rounded-md border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-xs font-medium text-emerald-800"
-                                : "inline-flex justify-center rounded-md border border-amber-200 bg-amber-50 px-2 py-0.5 text-xs font-medium text-amber-900"
-                            }
-                          >
-                            {emrStatusLabel(row.emrSyncStatus)}
-                          </span>
-                        </td>
-                        <td className="py-3 pl-3 text-center align-middle">
-                          <button
-                            type="button"
-                            onClick={() => openRecordDetail(row)}
-                            className="rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-600 transition-colors hover:bg-gray-100 hover:text-gray-900"
-                          >
-                            상세
-                          </button>
-                        </td>
-                      </tr>
-                    ))
-                  )}
-                </tbody>
-              </table>
+        <section>
+          <h2 className="mb-5 text-2xl font-bold text-[#111827]">주요 키워드</h2>
+          <div className="mobile-app-card p-4">
+            <div className="mb-5 grid grid-cols-2 rounded-md bg-[#F3F4F6] p-1 text-sm font-semibold text-[#6B7280]">
+              <div className="rounded-md bg-white py-2 text-center text-[#111827] shadow-sm">
+                생성 키워드
+              </div>
+              <div className="py-2 text-center">요약 키워드</div>
             </div>
+            {keywords.length > 0 ? (
+              <div className="flex flex-wrap gap-3">
+                {keywords.map((keyword) => (
+                  <span
+                    key={keyword}
+                    className="rounded-full bg-[#EFF6FF] px-4 py-2 text-sm font-bold text-[#2563EB]"
+                  >
+                    {keyword}
+                  </span>
+                ))}
+              </div>
+            ) : (
+              <p className="py-5 text-center text-sm text-[#9CA3AF]">
+                최근 기록에서 표시할 키워드가 없습니다.
+              </p>
+            )}
           </div>
-        </div>
-      </div>
+        </section>
 
-      {showAddPatientModal && (
-        <AddPatientModal
-          onClose={() => setShowAddPatientModal(false)}
-          onSuccess={() => {
-            onPatientAdded();
-            void queryClient.invalidateQueries({ queryKey: queryKeys.patients.stats });
-            void queryClient.invalidateQueries({ queryKey: queryKeys.records.recentCreated(10) });
-            void queryClient.invalidateQueries({ queryKey: queryKeys.records.recentUpdated(10) });
-          }}
-        />
-      )}
+        <section>
+          <div className="mb-5 flex items-center justify-between">
+            <h2 className="text-2xl font-bold text-[#111827]">최근 생성기록</h2>
+            <button
+              type="button"
+              onClick={() => navigate(ROUTES.records)}
+              className="text-sm font-bold text-[#2563EB]"
+            >
+              전체보기
+            </button>
+          </div>
+          <div className="flex flex-col gap-4">
+            {recentCreated.length === 0 ? (
+              <div className="mobile-app-card px-5 py-10 text-center text-sm text-[#9CA3AF]">
+                생성된 기록이 없습니다.
+              </div>
+            ) : (
+              recentCreated.slice(0, 6).map((row) => (
+                <RecordCard
+                  key={`c-${row.id}`}
+                  row={row}
+                  templatesMap={templatesMapQuery.data}
+                  onOpen={openRecordDetail}
+                />
+              ))
+            )}
+          </div>
+        </section>
+
+        <section className="hidden lg:block">
+          <div className="mb-5 flex items-center justify-between">
+            <h2 className="text-2xl font-bold text-[#111827]">최근 수정기록</h2>
+          </div>
+          <div className="grid grid-cols-2 gap-4 xl:grid-cols-3">
+            {recentUpdated.slice(0, 6).map((row) => (
+              <RecordCard
+                key={`u-${row.id}`}
+                row={row}
+                templatesMap={templatesMapQuery.data}
+                onOpen={openRecordDetail}
+              />
+            ))}
+          </div>
+        </section>
+      </div>
     </>
   );
 }

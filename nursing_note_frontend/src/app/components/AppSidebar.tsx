@@ -127,44 +127,6 @@ export function AppSidebar({ sidebarOpen, onCloseDrawer }: AppSidebarProps) {
           label="음성기록"
         />
         <NavItem
-          id="aiCreate"
-          activeId={activeId}
-          path={ROUTES.aiCreate}
-          onNavigate={go}
-          icon={
-            <SidebarMenuIcon
-              name="AIRecordCreate"
-              variant="onPrimary"
-            />
-          }
-          label={
-            <>
-              AI기록
-              <br />
-              생성
-            </>
-          }
-        />
-        <NavItem
-          id="aiSummary"
-          activeId={activeId}
-          path={ROUTES.aiSummary}
-          onNavigate={go}
-          icon={
-            <SidebarMenuIcon
-              name="AIRecordSummary"
-              variant="onPrimary"
-            />
-          }
-          label={
-            <>
-              AI기록
-              <br />
-              요약
-            </>
-          }
-        />
-        <NavItem
           id="ocr"
           activeId={activeId}
           path={ROUTES.ocr}
@@ -189,6 +151,19 @@ export function AppSidebar({ sidebarOpen, onCloseDrawer }: AppSidebarProps) {
             />
           }
           label="기록목록"
+        />
+        <NavItem
+          id="settings"
+          activeId={activeId}
+          path={ROUTES.settings}
+          onNavigate={go}
+          icon={
+            <SidebarMenuIcon
+              name="userProfile"
+              variant="onPrimary"
+            />
+          }
+          label="내정보"
         />
       </div>
     </div>

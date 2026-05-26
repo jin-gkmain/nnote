@@ -1,5 +1,3 @@
-import { Calendar } from "lucide-react";
-import { useState } from "react";
 import { Link, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "@/app/auth/auth-context";
 import { AppSidebar } from "@/app/components/AppSidebar";
@@ -12,59 +10,81 @@ import {
   DropdownMenuTrigger,
 } from "@/app/components/ui/dropdown-menu";
 import { ROUTES } from "@/app/navigation/routes";
-import { formatTodayYmd } from "@/app/utils/formatTodayYmd";
+import {
+  getSidebarActiveId,
+  type SidebarNavId,
+} from "@/app/navigation/sidebarNav";
 
-export default function AppLayout() {
-  const [sidebarOpen, setSidebarOpen] = useState(false);
-  const { user, logout } = useAuth();
+const bottomNavItems: {
+  id: SidebarNavId;
+  path: string;
+  icon: Parameters<typeof SidebarMenuIcon>[0]["name"];
+  label: string;
+}[] = [
+  { id: "home", path: ROUTES.home, icon: "home", label: "홈" },
+  { id: "voice", path: ROUTES.voice, icon: "voiceRecord", label: "음성기록" },
+  { id: "ocr", path: ROUTES.ocr, icon: "textOCR", label: "OCR" },
+  { id: "records", path: ROUTES.records, icon: "recordsList", label: "기록목록" },
+  { id: "settings", path: ROUTES.settings, icon: "userProfile", label: "내정보" },
+];
+
+function BottomTabBar() {
   const navigate = useNavigate();
   const location = useLocation();
-  const todayYmd = formatTodayYmd();
-  const showToday = location.pathname === ROUTES.home;
-
-  const closeDrawer = () => setSidebarOpen(false);
+  const activeId = getSidebarActiveId(location.pathname);
 
   return (
-    <div className="flex h-dvh min-h-0 w-full flex-row overflow-hidden bg-white">
-      <AppSidebar
-        sidebarOpen={sidebarOpen}
-        onCloseDrawer={closeDrawer}
-      />
+    <nav className="fixed inset-x-0 bottom-0 z-30 border-t border-[#E5E7EB] bg-white/95 px-2 pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-2 shadow-[0_-4px_12px_rgba(17,24,39,0.06)] backdrop-blur lg:hidden">
+      <div className="mx-auto grid max-w-md grid-cols-5">
+        {bottomNavItems.map((item) => {
+          const active = activeId === item.id;
+          return (
+            <button
+              key={item.id}
+              type="button"
+              onClick={() => navigate(item.path)}
+              className={`flex min-h-[56px] flex-col items-center justify-center gap-1 rounded-lg text-[11px] font-medium transition-colors ${
+                active ? "text-[#2563EB]" : "text-[#6B7280] hover:text-[#111827]"
+              }`}
+              aria-current={active ? "page" : undefined}
+            >
+              <SidebarMenuIcon
+                name={item.icon}
+                variant={active ? "menuActive" : "menu"}
+                className="!h-6 !w-6"
+              />
+              <span>{item.label}</span>
+            </button>
+          );
+        })}
+      </div>
+    </nav>
+  );
+}
 
-      {sidebarOpen && (
-        <div
-          className="fixed inset-0 z-20 bg-black/20 lg:hidden"
-          onClick={closeDrawer}
-          aria-hidden
+export default function AppLayout() {
+  const { user, logout } = useAuth();
+  const navigate = useNavigate();
+
+  return (
+    <div className="flex h-dvh min-h-0 w-full flex-row overflow-hidden bg-[#F9FAFB] text-[#111827]">
+      <div className="hidden lg:block">
+        <AppSidebar
+          sidebarOpen={false}
+          onCloseDrawer={() => undefined}
         />
-      )}
+      </div>
 
-      <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-white">
-        <header className="flex min-h-[52px] shrink-0 items-center bg-white px-4 pt-[max(0px,env(safe-area-inset-top))] pb-2 md:h-[60px] md:px-6 md:py-0 md:pt-0">
-          <div className="flex w-10 shrink-0 justify-start lg:hidden">
-            {!sidebarOpen ? (
-              <button
-                type="button"
-                onClick={() => setSidebarOpen(true)}
-                className="select-none rounded-lg p-2.5 transition-[transform,background-color] duration-150 ease-out hover:bg-gray-100 active:scale-95 active:bg-gray-200/90 min-h-11 min-w-11 md:min-h-0 md:min-w-0 md:p-2"
-                aria-label="메뉴 열기"
-              >
-                <SidebarMenuIcon
-                  name="openSidebar"
-                  className="!h-6 !w-6"
-                />
-              </button>
-            ) : (
-              <span className="inline-block h-10 w-10 shrink-0" aria-hidden />
-            )}
-          </div>
-          <div className="flex flex-1 items-center justify-end gap-3 sm:gap-4">
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-[#F9FAFB]">
+        <header className="hidden min-h-[64px] shrink-0 items-center border-b border-[#E5E7EB] bg-white px-6 lg:flex">
+          <div className="text-sm font-semibold text-[#6B7280]">NNote</div>
+          <div className="flex flex-1 items-center justify-end gap-4">
             {user ? (
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
                   <button
                     type="button"
-                    className="flex h-[44px] w-[44px] items-center justify-center rounded-full bg-blue-600 text-white transition-opacity hover:opacity-90"
+                    className="flex h-[44px] w-[44px] items-center justify-center rounded-full bg-[#3B82F6] text-white transition-opacity hover:opacity-90"
                     aria-label="사용자 프로필"
                   >
                     <SidebarMenuIcon name="userProfile" variant="onPrimary" />
@@ -79,6 +99,9 @@ export default function AppLayout() {
                       <DropdownMenuSeparator />
                     </>
                   ) : null}
+                  <DropdownMenuItem onSelect={() => navigate(ROUTES.settings)}>
+                    내 정보
+                  </DropdownMenuItem>
                   <DropdownMenuItem onSelect={() => logout()}>
                     로그아웃
                   </DropdownMenuItem>
@@ -87,40 +110,18 @@ export default function AppLayout() {
             ) : (
               <Link
                 to={ROUTES.login}
-                className="text-sm font-medium text-blue-600 hover:underline"
+                className="text-sm font-medium text-[#2563EB] hover:underline"
               >
                 로그인
               </Link>
             )}
           </div>
         </header>
-        {showToday ? (
-          <div className="bg-white px-4 py-2 md:px-6">
-            <div className="flex justify-end">
-              <div
-                className="pointer-events-none inline-flex select-none items-center gap-1.5 rounded-sm border border-gray-200 bg-white px-2 py-1 text-sm text-gray-700 shadow-sm sm:gap-2 sm:px-4"
-                role="status"
-                aria-label={`오늘 날짜 ${todayYmd}`}
-              >
-                <Calendar
-                  className="h-4 w-4 shrink-0 text-gray-500"
-                  strokeWidth={2}
-                  aria-hidden
-                />
-                <span className="text-sm font-bold tracking-wide text-gray-800">
-                  TODAY
-                </span>
-                <span className="text-xs text-gray-600 tabular-nums sm:text-sm">
-                  {todayYmd}
-                </span>
-              </div>
-            </div>
-          </div>
-        ) : null}
 
-        <main className="flex-1 overflow-y-auto overscroll-contain px-3 py-4 pb-[max(1rem,env(safe-area-inset-bottom))] sm:px-4 sm:py-6 md:px-8 md:py-8 lg:px-10 lg:py-10">
+        <main className="mobile-safe-bottom flex-1 overflow-y-auto overscroll-contain px-5 pt-[max(1.5rem,env(safe-area-inset-top))] sm:px-6 md:px-8 lg:px-10 lg:py-10 lg:pb-10">
           <Outlet />
         </main>
+        <BottomTabBar />
       </div>
     </div>
   );

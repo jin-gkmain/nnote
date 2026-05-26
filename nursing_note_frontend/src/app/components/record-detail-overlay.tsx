@@ -27,6 +27,7 @@ export interface RecordDetailOverlayProps {
 function creationSourceLabel(source: RecordDetailResponse["creationSource"]): string {
   if (source === "voice") return "음성 기록";
   if (source === "ocr") return "텍스트 OCR";
+  if (source === "record_based") return "기록 기반 생성";
   if (source === "ai") return "AI 기록 생성";
   return "직접 작성";
 }
@@ -83,6 +84,11 @@ function hasRecordSourceContent(detail: RecordDetailResponse): boolean {
       text.length > 0 ||
       (typeof savedAt === "string" && savedAt.trim().length > 0)
     );
+  }
+  if (detail.creationSource === "record_based") {
+    const sourceId = d["생성근거기록Id"];
+    const sourceDoc = d["생성근거문서번호"];
+    return sourceId != null || (typeof sourceDoc === "string" && sourceDoc.trim().length > 0);
   }
   if (detail.creationSource === "ai") {
     const memo = typeof d["메모원문"] === "string" ? d["메모원문"].trim() : "";
@@ -159,6 +165,21 @@ function RecordSourcePanel({ detail }: { detail: RecordDetailResponse }) {
       </div>
     );
   }
+  if (detail.creationSource === "record_based") {
+    const sourceId = d["생성근거기록Id"];
+    const sourceDoc = d["생성근거문서번호"];
+    return (
+      <div className="flex h-full min-h-0 flex-col gap-2">
+        <h3 className="text-sm font-semibold text-gray-900">기록 기반 생성 정보</h3>
+        <p className="text-sm text-gray-700">
+          기준 기록 ID: {sourceId != null ? String(sourceId) : "-"}
+        </p>
+        <p className="text-sm text-gray-700">
+          기준 문서번호: {typeof sourceDoc === "string" && sourceDoc ? sourceDoc : "-"}
+        </p>
+      </div>
+    );
+  }
   return null;
 }
 
@@ -167,13 +188,11 @@ function SoapieFields({
   readOnly,
   onChange,
   templateId,
-  patientId,
 }: {
   data: Record<string, unknown>;
   readOnly: boolean;
   onChange?: (key: string, value: string) => void;
   templateId: string;
-  patientId: number;
 }) {
   const fields = [
     { key: "situation", label: "S (Subjective)" },
@@ -191,7 +210,6 @@ function SoapieFields({
           <InputAssistField
             templateId={templateId}
             fieldKey={key}
-            patientId={patientId}
             multiline
             rows={4}
             value={String(data[key] ?? "")}
@@ -210,13 +228,11 @@ function SbarFields({
   readOnly,
   onChange,
   templateId,
-  patientId,
 }: {
   data: Record<string, unknown>;
   readOnly: boolean;
   onChange?: (key: string, value: string) => void;
   templateId: string;
-  patientId: number;
 }) {
   const fields = [
     { key: "작성자", label: "작성자" },
@@ -233,7 +249,6 @@ function SbarFields({
           <InputAssistField
             templateId={templateId}
             fieldKey={key}
-            patientId={patientId}
             multiline
             rows={key === "작성자" ? 2 : 4}
             value={String(data[key] ?? "")}
@@ -343,7 +358,6 @@ function RecordMainBody({
         readOnly={readOnly}
         onChange={onFieldChange}
         templateId={detail.recordType}
-        patientId={detail.patientId}
       />
     );
   }
@@ -354,7 +368,6 @@ function RecordMainBody({
         readOnly={readOnly}
         onChange={onFieldChange}
         templateId={detail.recordType}
-        patientId={detail.patientId}
       />
     );
   }
@@ -643,13 +656,6 @@ export function RecordDetailOverlay({
                   <p className="mt-2 text-sm text-gray-600">
                     {formatDetailDateTime(detail.recordDate, detail.recordTime)} ·{" "}
                     {creationSourceLabel(detail.creationSource)}
-                  </p>
-                  <p className="mt-3 inline-flex max-w-full rounded-full bg-gray-100 px-3 py-1.5 text-sm font-medium text-gray-900">
-                    <span className="tabular-nums">{detail.patient.patientNumber}</span>
-                    <span className="mx-2 text-gray-300" aria-hidden>
-                      |
-                    </span>
-                    <span>{detail.patient.name}</span>
                   </p>
                   {isEditing ? (
                     <div className="mt-4 flex flex-wrap gap-3 border-t border-gray-100 pt-4">
