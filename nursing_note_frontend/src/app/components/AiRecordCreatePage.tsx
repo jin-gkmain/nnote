@@ -357,7 +357,7 @@ export default function AiRecordCreatePage({
   const blocking = isGenerating || isSaving || isSendingEmr;
 
   return (
-    <div className="relative flex h-[calc(100dvh-7.5rem)] w-full flex-col overflow-hidden text-left">
+    <div className="relative flex h-full w-full flex-col overflow-hidden text-left">
       {blocking ? (
         <div
           className="pointer-events-auto fixed inset-0 z-[200] flex items-center justify-center bg-slate-900/30 backdrop-blur-[2px]"

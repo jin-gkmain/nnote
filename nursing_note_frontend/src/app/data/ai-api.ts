@@ -4,10 +4,16 @@ export interface AiTemplateFieldSpec {
   key: string;
   label: string;
   description?: string;
-  /** template_fill 제약용 — fields_json 의 type 과 동일 */
+  /** template_fill 제약용 — v2 template field type */
   valueType?: string;
-  /** radio / checkbox / selectbox 허용 키 */
+  /** single_select / multi_select 허용 키 */
   optionKeys?: string[];
+  options?: Array<{ optionKey: string; label: string; allowFreeText?: boolean }>;
+  allowFreeText?: boolean;
+  conditions?: Array<Record<string, unknown>>;
+  inputSources?: readonly string[];
+  aiHint?: string;
+  sourceDefinition?: string;
 }
 
 export interface AiStructuredHint {

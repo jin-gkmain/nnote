@@ -260,7 +260,7 @@ export default function AiRecordSummaryPage() {
   }, [queryClient]);
 
   return (
-    <div className="relative flex min-h-[calc(100dvh-7.5rem)] w-full flex-col text-left">
+    <div className="relative flex min-h-full w-full flex-col text-left">
       <RecordDetailOverlay
         recordId={detailRecordId}
         onClose={() => setDetailRecordId(null)}

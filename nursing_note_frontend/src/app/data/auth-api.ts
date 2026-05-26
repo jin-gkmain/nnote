@@ -1,4 +1,7 @@
-import type { TemplateSectionMap } from "@/app/data/template-field-registry";
+import {
+  normalizeTemplateFieldOptions,
+  type TemplateSectionMap,
+} from "@/app/data/template-field-registry";
 
 export const AUTH_TOKEN_STORAGE_KEY = "nursing_note_access_token";
 
@@ -238,15 +241,33 @@ export async function putTemplateUiRequest(
   sections: TemplateSectionMap,
   displayTitle?: string | null,
 ): Promise<void> {
-  const body: {
-    sections: TemplateSectionMap;
-    displayTitle?: string;
-  } = { sections };
+  const body = {
+    title: displayTitle ?? undefined,
+    sections: Object.entries(sections).map(([sectionName, columns], sectionIndex) => ({
+      sectionKey: sectionName.replace(/\s+/g, "-").slice(0, 96) || `section-${sectionIndex + 1}`,
+      title: sectionName,
+      displayOrder: sectionIndex + 1,
+      repeatable: false,
+      fields: Object.entries(columns).map(([fieldKey, def], fieldIndex) => ({
+        fieldKey,
+        label: def.label ?? fieldKey,
+        type: def.type,
+        description: def.description ?? "",
+        aiHint: def.aiHint ?? "",
+        inputSources: def.inputSources ?? [],
+        sourceRow: def.sourceRow ?? 0,
+        sourceDefinition: def.sourceDefinition ?? "",
+        displayOrder: fieldIndex + 1,
+        options: normalizeTemplateFieldOptions(def.optionDetails, def.options),
+        conditions: def.conditions ?? [],
+      })),
+    })),
+  };
   if (displayTitle !== undefined) {
-    body.displayTitle = displayTitle ?? "";
+    body.title = displayTitle ?? "";
   }
   const res = await authFetch(
-    `/api/settings/template-ui/${encodeURIComponent(templateId)}`,
+    `/api/templates/${encodeURIComponent(templateId)}`,
     token,
     {
       method: "PUT",

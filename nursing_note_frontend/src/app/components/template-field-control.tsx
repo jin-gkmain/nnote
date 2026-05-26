@@ -62,12 +62,53 @@ export function TemplateFieldControl({
     );
   }
 
+  if (kind === "computed" || kind === "section_note") {
+    return (
+      <textarea
+        readOnly
+        value={value || field.sourceDefinition || field.aiHint || ""}
+        className={`${classNameTextarea} bg-gray-50 text-gray-600`}
+      />
+    );
+  }
+
+  if (kind === "image") {
+    return (
+      <div className="rounded-lg border border-dashed border-gray-300 bg-gray-50 px-3 py-4 text-sm text-gray-500">
+        이미지/사진 입력 항목입니다. 현재 화면에서는 메모 값으로 저장됩니다.
+        <InputAssistField
+          templateId={templateId}
+          fieldKey={field.storageKey}
+          patientId={patientId}
+          multiline
+          rows={3}
+          readOnly={readOnly}
+          value={value}
+          onChange={onChange}
+          className={`${classNameTextarea} mt-3 bg-white`}
+        />
+      </div>
+    );
+  }
+
   if (kind === "date") {
     return (
       <input
         type="date"
         readOnly={readOnly}
         value={coerceDateInputValue(value)}
+        onChange={(e) => onChange(e.target.value)}
+        className={classNameInputShort}
+      />
+    );
+  }
+
+  if (kind === "datetime") {
+    return (
+      <input
+        type="datetime-local"
+        readOnly={readOnly}
+        value={value}
         onChange={(e) => onChange(e.target.value)}
         className={classNameInputShort}
       />
@@ -89,61 +130,59 @@ export function TemplateFieldControl({
     );
   }
 
-  if (kind === "selectbox") {
-    const entries = Object.entries(field.options ?? {}).sort(([a], [b]) =>
-      a.localeCompare(b, "ko"),
-    );
-    const current = value.trim();
+  if (kind === "single_select") {
+    const parsedValue = parseSingleSelectValue(value);
+    const entries = (field.optionDetails?.length
+      ? field.optionDetails.map((option) => [option.optionKey, option.label, option.allowFreeText] as const)
+      : Object.entries(field.options ?? {}).map(([k, v]) => [k, v || k, false] as const)
+    ).sort(([a], [b]) => a.localeCompare(b, "ko"));
+    const current = parsedValue.selected;
     const valid = entries.some(([k]) => k === current);
     const selectVal = valid ? current : "";
-    return (
-      <select
-        disabled={readOnly || entries.length === 0}
-        value={selectVal}
-        onChange={(e) => onChange(e.target.value)}
-        className={classNameInputShort}
-      >
-        <option value="">— (선택)</option>
-        {entries.map(([optKey, hint]) => (
-          <option key={optKey} value={optKey}>
-            {hint ? `${optKey} (${hint})` : optKey}
-          </option>
-        ))}
-      </select>
+    const selectedAllowsFreeText = entries.some(
+      ([optKey, _label, allowFreeText]) => allowFreeText && optKey === selectVal,
     );
-  }
-
-  if (kind === "radio") {
-    const entries = Object.entries(field.options ?? {}).sort(([a], [b]) =>
-      a.localeCompare(b, "ko"),
-    );
-    const name = `radio-${templateId}-${field.storageKey}`;
     return (
-      <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:gap-x-4 sm:gap-y-2">
-        {entries.map(([optKey, hint]) => (
-          <label key={optKey} className="flex cursor-pointer items-center gap-2 text-sm text-gray-900">
-            <input
-              type="radio"
-              name={name}
-              disabled={readOnly}
-              checked={value.trim() === optKey}
-              onChange={() => onChange(optKey)}
-              className="h-4 w-4"
-            />
-            <span>{hint ? `${optKey} (${hint})` : optKey}</span>
-          </label>
-        ))}
-        {entries.length === 0 ? (
-          <span className="text-xs text-gray-500">선택지가 없습니다.</span>
+      <div className="space-y-2">
+        <select
+          disabled={readOnly || entries.length === 0}
+          value={selectVal}
+          onChange={(e) => {
+            const nextSelected = e.target.value;
+            const allowsFreeText = entries.some(
+              ([optKey, _label, allowFreeText]) => allowFreeText && optKey === nextSelected,
+            );
+            onChange(allowsFreeText ? serializeSingleSelectValue(nextSelected, "") : nextSelected);
+          }}
+          className={classNameInputShort}
+        >
+          <option value="">— (선택)</option>
+          {entries.map(([optKey, label]) => (
+            <option key={optKey} value={optKey}>
+              {label || optKey}
+            </option>
+          ))}
+        </select>
+        {selectedAllowsFreeText ? (
+          <InputAssistField
+            templateId={templateId}
+            fieldKey={`${field.storageKey}_free_text`}
+            patientId={patientId}
+            readOnly={readOnly}
+            value={parsedValue.freeText}
+            onChange={(next) => onChange(serializeSingleSelectValue(selectVal, next))}
+            className={classNameInputShort}
+          />
         ) : null}
       </div>
     );
   }
 
-  if (kind === "checkbox") {
-    const entries = Object.entries(field.options ?? {}).sort(([a], [b]) =>
-      a.localeCompare(b, "ko"),
-    );
+  if (kind === "multi_select") {
+    const entries = (field.optionDetails?.length
+      ? field.optionDetails.map((option) => [option.optionKey, option.label] as const)
+      : Object.entries(field.options ?? {}).map(([k, v]) => [k, v || k] as const)
+    ).sort(([a], [b]) => a.localeCompare(b, "ko"));
     const keys = entries.map(([k]) => k);
     const selected = new Set(parseCheckboxCsvToKeys(value, keys));
     return (
@@ -200,4 +239,23 @@ export function TemplateFieldControl({
       className={classNameInputShort}
     />
   );
+}
+
+function parseSingleSelectValue(value: string): { selected: string; freeText: string } {
+  const trimmed = value.trim();
+  if (!trimmed.startsWith("{")) return { selected: trimmed, freeText: "" };
+  try {
+    const parsed = JSON.parse(trimmed) as { selected?: unknown; freeText?: unknown };
+    return {
+      selected: typeof parsed.selected === "string" ? parsed.selected : "",
+      freeText: typeof parsed.freeText === "string" ? parsed.freeText : "",
+    };
+  } catch {
+    return { selected: trimmed, freeText: "" };
+  }
+}
+
+function serializeSingleSelectValue(selected: string, freeText: string): string {
+  if (!selected) return "";
+  return JSON.stringify({ selected, freeText });
 }

@@ -75,7 +75,7 @@ export default function NursingRecordListPage({
   const jumpToNextBlock = () => setPage(Math.min(totalPages, blockStart + PAGE_BLOCK_SIZE));
 
   return (
-    <div className="flex min-h-[calc(100dvh-7.5rem)] flex-col">
+    <div className="flex min-h-full flex-col">
       <RecordDetailOverlay
         recordId={detailRecordId}
         onClose={() => setDetailRecordId(null)}

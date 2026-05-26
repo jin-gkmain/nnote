@@ -18,7 +18,10 @@ import {
   isChoiceTemplateValueType,
   isValidRawTemplateValueType,
   normalizeStoredTemplateValueType,
+  normalizeTemplateFieldOptions,
+  optionsObjectFromOptionDetails,
   type TemplateColumnDef,
+  type TemplateFieldOption,
   type TemplateSectionMap,
   type TemplateSectionPreset,
   type TemplateValueType,
@@ -41,12 +44,17 @@ type PresetCategory = "common" | "patient" | "extra"
 
 interface TemplateColumnDraft {
   id: string
+  fieldKey: string
   name: string
   description: string
+  aiHint: string
   valueType: TemplateValueType
   hidden: boolean
-  /** radio / checkbox / selectbox 일 때 options 객체 JSON 문자열 */
-  optionsJson: string
+  options: TemplateFieldOption[]
+  conditions: TemplateColumnDef["conditions"]
+  inputSources: string[]
+  sourceRow?: number
+  sourceDefinition?: string
 }
 
 interface TemplateSectionDraft {
@@ -66,17 +74,20 @@ const VALUE_TYPE_OPTIONS: TemplateValueType[] = [
   "text_short",
   "number",
   "date",
+  "datetime",
   "boolean",
-  "radio",
-  "checkbox",
-  "selectbox",
+  "single_select",
+  "multi_select",
+  "computed",
+  "image",
+  "section_note",
 ]
 /** 템플릿 추가 모달 기본값: 일반 필드는 options에 `{}`, choice 타입은 최소 1개 키 필요 */
 const DEFAULT_NEW_TEMPLATE_JSON = `{
   "1. 기본 항목": {
     "fieldA": { "type": "text_long", "description": "", "options": {} },
     "중증도": {
-      "type": "selectbox",
+      "type": "single_select",
       "description": "",
       "options": { "경증": "", "중증": "", "중증도불명": "" }
     }
@@ -93,52 +104,18 @@ function createUid(prefix: string): string {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
 }
 
-function formatOptionsJson(def: TemplateColumnDef | undefined): string {
-  return JSON.stringify(def?.options ?? {}, null, 2)
-}
-
-/** 읽기 전용 미리보기용: choice 필드의 options 키 목록(또는 오류 라벨) */
-function summarizeChoiceOptionKeys(optionsJson: string): { keys: string[] } | { errorLabel: string } {
-  try {
-    const parsed: unknown = JSON.parse(optionsJson.trim() || "{}")
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
-      return { errorLabel: "options 형식 오류" }
-    const keys = Object.keys(parsed as Record<string, unknown>).filter((key) => key.trim() !== "")
-    return { keys }
-  } catch {
-    return { errorLabel: "options JSON 오류" }
+function defaultOption(index: number): TemplateFieldOption {
+  return {
+    optionKey: `옵션${index}`,
+    label: `옵션${index}`,
+    allowFreeText: false,
+    displayOrder: index,
   }
 }
 
-function parseOptionsJsonForColumn(
-  optionsJson: string,
-  columnName: string,
-  valueType: TemplateValueType,
-): Record<string, string> | undefined {
-  if (!isChoiceTemplateValueType(valueType)) return undefined;
-  const trimmed = optionsJson.trim() || "{}";
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(trimmed);
-  } catch {
-    throw new Error(`소주제 "${columnName}"의 options JSON 파싱에 실패했습니다.`);
-  }
-  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw new Error(`소주제 "${columnName}"의 options는 객체여야 합니다.`);
-  }
-  const out: Record<string, string> = {};
-  for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
-    const key = k.trim();
-    if (!key) throw new Error(`소주제 "${columnName}"의 options에 빈 키는 허용되지 않습니다.`);
-    if (typeof v !== "string") {
-      throw new Error(`소주제 "${columnName}"의 options 값은 문자열만 허용됩니다.`);
-    }
-    out[key] = v;
-  }
-  if (Object.keys(out).length === 0) {
-    throw new Error(`소주제 "${columnName}"의 타입 "${valueType}"에는 options에 최소 1개의 선택지가 필요합니다.`);
-  }
-  return out;
+function normalizeDraftOptions(column: TemplateColumnDraft): TemplateFieldOption[] {
+  const normalized = normalizeTemplateFieldOptions(column.options, undefined)
+  return normalized.length > 0 ? normalized : [defaultOption(1)]
 }
 
 function formatDateLabel(iso: string | null): string {
@@ -189,11 +166,17 @@ function toDraftSections(map: TemplateSectionMap): TemplateSectionDraft[] {
     name,
     columns: Object.entries(columns).map(([columnName, def]) => ({
       id: createUid("column"),
-      name: columnName,
+      fieldKey: columnName,
+      name: def?.label ?? columnName,
       description: def?.description ?? "",
+      aiHint: def?.aiHint ?? "",
       valueType: normalizeStoredTemplateValueType(String(def?.type ?? "text_long")),
       hidden: false,
-      optionsJson: formatOptionsJson(def),
+      options: normalizeTemplateFieldOptions(def?.optionDetails, def?.options),
+      conditions: def?.conditions ?? [],
+      inputSources: def?.inputSources ?? [],
+      sourceRow: def?.sourceRow,
+      sourceDefinition: def?.sourceDefinition,
     })),
   }))
 }
@@ -209,11 +192,24 @@ function toSectionMap(sections: TemplateSectionDraft[]): TemplateSectionMap {
       const columnName = column.name.trim()
       if (!columnName) continue
       const def: TemplateColumnDef = { type: column.valueType }
+      def.label = columnName
       const description = column.description.trim()
       if (description) def.description = description
-      const opts = parseOptionsJsonForColumn(column.optionsJson, columnName, column.valueType)
-      if (opts !== undefined) def.options = opts
-      columns[columnName] = def
+      const aiHint = column.aiHint.trim()
+      if (aiHint) def.aiHint = aiHint
+      if (column.inputSources.length) def.inputSources = [...column.inputSources]
+      if (column.sourceRow !== undefined) def.sourceRow = column.sourceRow
+      if (column.sourceDefinition) def.sourceDefinition = column.sourceDefinition
+      if (column.conditions?.length) def.conditions = [...column.conditions]
+      if (isChoiceTemplateValueType(column.valueType)) {
+        const opts = normalizeDraftOptions(column)
+        if (opts.some((option) => !option.optionKey.trim())) {
+          throw new Error(`소주제 "${columnName}"의 선택값은 비어 있을 수 없습니다.`)
+        }
+        def.optionDetails = opts
+        def.options = optionsObjectFromOptionDetails(opts)
+      }
+      columns[column.fieldKey || createUid("field")] = def
     }
     if (Object.keys(columns).length > 0) out[sectionName] = columns
   }
@@ -242,8 +238,9 @@ function SortableColumnRow({
   isEditing,
   updateColumnName,
   updateColumnDescription,
+  updateColumnAiHint,
   updateColumnType,
-  updateColumnOptionsJson,
+  updateColumnOptions,
   updateColumnHidden,
   removeColumn,
 }: {
@@ -252,8 +249,9 @@ function SortableColumnRow({
   isEditing: boolean
   updateColumnName: (sectionId: string, columnId: string, value: string) => void
   updateColumnDescription: (sectionId: string, columnId: string, value: string) => void
+  updateColumnAiHint: (sectionId: string, columnId: string, value: string) => void
   updateColumnType: (sectionId: string, columnId: string, value: TemplateValueType) => void
-  updateColumnOptionsJson: (sectionId: string, columnId: string, value: string) => void
+  updateColumnOptions: (sectionId: string, columnId: string, value: TemplateFieldOption[]) => void
   updateColumnHidden: (sectionId: string, columnId: string, hidden: boolean) => void
   removeColumn: (sectionId: string, columnId: string) => void
 }) {
@@ -261,6 +259,7 @@ function SortableColumnRow({
     id: columnDndId(column.id),
     disabled: !isEditing,
   })
+  const options = normalizeDraftOptions(column)
 
   return (
     <div
@@ -331,44 +330,100 @@ function SortableColumnRow({
             <span className="rounded-md bg-amber-100 px-2 py-1 text-xs text-amber-700">숨김</span>
           ) : null}
           {isChoiceTemplateValueType(column.valueType) ? (
-            (() => {
-              const summary = summarizeChoiceOptionKeys(column.optionsJson)
-              if ("errorLabel" in summary)
-                return (
-                  <span
-                    className="max-w-[220px] truncate rounded-md bg-amber-100 px-2 py-1 text-xs text-amber-800"
-                    title={column.optionsJson}
-                  >
-                    {summary.errorLabel}
-                  </span>
-                )
-              if (summary.keys.length === 0)
-                return (
-                  <span className="rounded-md bg-amber-100 px-2 py-1 text-xs text-amber-800">선택지 없음</span>
-                )
-              return (
-                <span
-                  className="max-w-[min(28rem,calc(100%-1rem))] truncate text-xs text-gray-500"
-                  title={`options: ${summary.keys.join(", ")}`}
-                >
-                  options: {summary.keys.join(", ")}
-                </span>
-              )
-            })()
+            options.length === 0 ? (
+              <span className="rounded-md bg-amber-100 px-2 py-1 text-xs text-amber-800">선택지 없음</span>
+            ) : (
+              <span
+                className="max-w-[min(28rem,calc(100%-1rem))] truncate text-xs text-gray-500"
+                title={`선택지: ${options.map((option) => option.optionKey).join(", ")}`}
+              >
+                선택지: {options.map((option) => option.label || option.optionKey).join(", ")}
+              </span>
+            )
           ) : null}
         </>
       )}
       </div>
       {isEditing && isChoiceTemplateValueType(column.valueType) ? (
-        <div className="min-w-0 pl-0 sm:pl-8">
-          <label className="mb-1 block text-xs font-medium text-gray-600">options (JSON 객체, 키=값·라벨)</label>
-          <textarea
-            value={column.optionsJson}
-            onChange={(event) => updateColumnOptionsJson(section.id, column.id, event.target.value)}
-            spellCheck={false}
-            className="min-h-[72px] w-full rounded-md border border-gray-300 bg-white px-2 py-1 font-mono text-xs text-gray-900"
-          />
+        <div className="min-w-0 space-y-2 pl-0 sm:pl-8">
+          <div className="flex items-center justify-between gap-2">
+            <p className="text-xs font-semibold text-gray-700">선택지</p>
+            <button
+              type="button"
+              onClick={() => updateColumnOptions(section.id, column.id, [...options, defaultOption(options.length + 1)])}
+              className="rounded-md border border-blue-200 bg-blue-50 px-2 py-1 text-xs font-medium text-blue-700 hover:bg-blue-100"
+            >
+              + 선택지 추가
+            </button>
+          </div>
+          {options.map((option, optionIndex) => (
+            <div key={`${option.displayOrder}-${option.optionKey}`} className="grid grid-cols-1 gap-2 rounded-md border border-gray-100 bg-white p-2 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto_auto] lg:items-end">
+              <label className="block text-xs text-gray-600">
+                선택값
+                <input
+                  type="text"
+                  value={option.optionKey}
+                  onChange={(event) => {
+                    const next = [...options]
+                    next[optionIndex] = {
+                      ...option,
+                      optionKey: event.target.value,
+                      label: option.label === option.optionKey ? event.target.value : option.label,
+                    }
+                    updateColumnOptions(section.id, column.id, next)
+                  }}
+                  className="mt-1 h-8 w-full rounded-md border border-gray-300 px-2 text-xs"
+                />
+              </label>
+              <label className="block text-xs text-gray-600">
+                표시 라벨
+                <input
+                  type="text"
+                  value={option.label}
+                  onChange={(event) => {
+                    const next = [...options]
+                    next[optionIndex] = { ...option, label: event.target.value }
+                    updateColumnOptions(section.id, column.id, next)
+                  }}
+                  className="mt-1 h-8 w-full rounded-md border border-gray-300 px-2 text-xs"
+                />
+              </label>
+              <label className="inline-flex items-center gap-1.5 text-xs text-gray-600">
+                <input
+                  type="checkbox"
+                  checked={option.allowFreeText}
+                  onChange={(event) => {
+                    const next = [...options]
+                    next[optionIndex] = { ...option, allowFreeText: event.target.checked }
+                    updateColumnOptions(section.id, column.id, next)
+                  }}
+                />
+                자유서술
+              </label>
+              <button
+                type="button"
+                disabled={options.length <= 1}
+                onClick={() => updateColumnOptions(section.id, column.id, options.filter((_, i) => i !== optionIndex))}
+                className="rounded-md border border-red-200 px-2 py-1 text-xs font-medium text-red-700 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                삭제
+              </button>
+            </div>
+          ))}
         </div>
+      ) : null}
+      {isEditing ? (
+        <label className="min-w-0 pl-0 text-xs font-medium text-gray-600 sm:pl-8">
+          AI 판단 기준
+          <textarea
+            value={column.aiHint}
+            onChange={(event) => updateColumnAiHint(section.id, column.id, event.target.value)}
+            placeholder={column.sourceDefinition || column.description || "원문에서 어떤 근거가 있을 때 이 필드를 채울지 적어주세요."}
+            className="mt-1 min-h-[64px] w-full resize-y rounded-md border border-gray-300 bg-white px-2 py-1 text-xs leading-relaxed text-gray-900"
+          />
+        </label>
+      ) : column.aiHint.trim() ? (
+        <p className="pl-0 text-xs leading-relaxed text-blue-700 sm:pl-8">판단 기준: {column.aiHint}</p>
       ) : null}
     </div>
   )
@@ -382,8 +437,9 @@ function SortableSectionCard({
   onRemoveSection,
   onUpdateColumnName,
   onUpdateColumnDescription,
+  onUpdateColumnAiHint,
   onUpdateColumnType,
-  onUpdateColumnOptionsJson,
+  onUpdateColumnOptions,
   onUpdateColumnHidden,
   onRemoveColumn,
 }: {
@@ -394,8 +450,9 @@ function SortableSectionCard({
   onRemoveSection: (sectionId: string) => void
   onUpdateColumnName: (sectionId: string, columnId: string, value: string) => void
   onUpdateColumnDescription: (sectionId: string, columnId: string, value: string) => void
+  onUpdateColumnAiHint: (sectionId: string, columnId: string, value: string) => void
   onUpdateColumnType: (sectionId: string, columnId: string, value: TemplateValueType) => void
-  onUpdateColumnOptionsJson: (sectionId: string, columnId: string, value: string) => void
+  onUpdateColumnOptions: (sectionId: string, columnId: string, value: TemplateFieldOption[]) => void
   onUpdateColumnHidden: (sectionId: string, columnId: string, hidden: boolean) => void
   onRemoveColumn: (sectionId: string, columnId: string) => void
 }) {
@@ -424,8 +481,9 @@ function SortableSectionCard({
               isEditing={isEditing}
               updateColumnName={onUpdateColumnName}
               updateColumnDescription={onUpdateColumnDescription}
+              updateColumnAiHint={onUpdateColumnAiHint}
               updateColumnType={onUpdateColumnType}
-              updateColumnOptionsJson={onUpdateColumnOptionsJson}
+              updateColumnOptions={onUpdateColumnOptions}
               updateColumnHidden={onUpdateColumnHidden}
               removeColumn={onRemoveColumn}
             />
@@ -559,7 +617,7 @@ export default function AdminTemplatesPage() {
             }
             if (!isValidRawTemplateValueType(raw)) {
               throw new Error(
-                `소주제 "${columnName}"의 타입이 올바르지 않습니다. (text_long, text_short, number, date, boolean, radio, checkbox, selectbox)`,
+                `소주제 "${columnName}"의 타입이 올바르지 않습니다. (text_long, text_short, number, date, datetime, boolean, single_select, multi_select, computed, image, section_note)`,
               )
             }
             cols[columnName] = { type: t }
@@ -568,7 +626,7 @@ export default function AdminTemplatesPage() {
             const typeRaw = typeof obj.type === "string" ? obj.type : ""
             if (!isValidRawTemplateValueType(typeRaw)) {
               throw new Error(
-                `소주제 "${columnName}"의 type이 올바르지 않습니다. (text_long, text_short, number, date, boolean, radio, checkbox, selectbox)`,
+                `소주제 "${columnName}"의 type이 올바르지 않습니다. (text_long, text_short, number, date, datetime, boolean, single_select, multi_select, computed, image, section_note)`,
               )
             }
             const type = normalizeStoredTemplateValueType(typeRaw)
@@ -924,11 +982,15 @@ export default function AdminTemplatesPage() {
                                   ...item.columns,
                                   {
                                     id: createUid("column"),
-                                    name: "newField",
+                                    fieldKey: createUid("field").slice(0, 96),
+                                    name: "새 항목",
                                     description: "",
+                                    aiHint: "",
                                     valueType: "text_short",
                                     hidden: false,
-                                    optionsJson: "{}",
+                                    options: [],
+                                    conditions: [],
+                                    inputSources: [],
                                   },
                                 ],
                               },
@@ -955,6 +1017,22 @@ export default function AdminTemplatesPage() {
                         ),
                       )
                     }
+                    onUpdateColumnAiHint={(sectionIdValue, columnIdValue, value) =>
+                      setDraftSections((prev) =>
+                        prev.map((item) =>
+                          item.id !== sectionIdValue
+                            ? item
+                            : {
+                                ...item,
+                                columns: item.columns.map((column) =>
+                                  column.id === columnIdValue
+                                    ? { ...column, aiHint: value }
+                                    : column,
+                                ),
+                              },
+                        ),
+                      )
+                    }
                     onUpdateColumnType={(sectionIdValue, columnIdValue, value) =>
                       setDraftSections((prev) =>
                         prev.map((item) =>
@@ -967,7 +1045,9 @@ export default function AdminTemplatesPage() {
                                     ? {
                                         ...column,
                                         valueType: value,
-                                        optionsJson: "{}",
+                                        options: isChoiceTemplateValueType(value)
+                                          ? normalizeDraftOptions(column)
+                                          : [],
                                       }
                                     : column,
                                 ),
@@ -975,7 +1055,7 @@ export default function AdminTemplatesPage() {
                         ),
                       )
                     }
-                    onUpdateColumnOptionsJson={(sectionIdValue, columnIdValue, json) =>
+                    onUpdateColumnOptions={(sectionIdValue, columnIdValue, options) =>
                       setDraftSections((prev) =>
                         prev.map((item) =>
                           item.id !== sectionIdValue
@@ -983,7 +1063,7 @@ export default function AdminTemplatesPage() {
                             : {
                                 ...item,
                                 columns: item.columns.map((column) =>
-                                  column.id === columnIdValue ? { ...column, optionsJson: json } : column,
+                                  column.id === columnIdValue ? { ...column, options } : column,
                                 ),
                               },
                         ),
@@ -1120,9 +1200,8 @@ export default function AdminTemplatesPage() {
                     <code className="rounded bg-gray-100 px-0.5">{"{}"}</code> 로 둡니다.
                   </p>
                   <p>
-                    <code className="rounded bg-gray-100 px-0.5">radio</code>,{" "}
-                    <code className="rounded bg-gray-100 px-0.5">checkbox</code>,{" "}
-                    <code className="rounded bg-gray-100 px-0.5">selectbox</code> 는{" "}
+                    <code className="rounded bg-gray-100 px-0.5">single_select</code>,{" "}
+                    <code className="rounded bg-gray-100 px-0.5">multi_select</code> 는{" "}
                     <code className="rounded bg-gray-100 px-0.5">options</code> 에 선택지 키를 최소 1개 이상 넣어야
                     합니다(값은 보조 문자열, 빈 문자열 허용).
                   </p>
@@ -1191,4 +1270,3 @@ export default function AdminTemplatesPage() {
     </div>
   )
 }
-

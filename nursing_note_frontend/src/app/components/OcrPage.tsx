@@ -264,7 +264,7 @@ export default function OcrPage({ patients }: OcrPageProps) {
   }
 
   return (
-    <div className="flex min-h-[calc(100dvh-7.5rem)] w-full flex-col text-left">
+    <div className="flex min-h-full w-full flex-col text-left">
       <h1 className="mb-4 text-xl font-bold text-gray-900 sm:mb-6 sm:text-2xl">OCR 스캔</h1>
       <div className="grid min-h-0 flex-1 grid-cols-1 gap-6 lg:grid-cols-[4fr_6fr] lg:gap-8">
         <section className="flex min-h-0 min-w-0 flex-col rounded-xl border border-gray-200 bg-white p-4 shadow-sm sm:p-5">
@@ -535,4 +535,3 @@ function createInitialFromFields(
   if (fields[0]) initialFields[fields[0].storageKey] = scanResult;
   return initialFields;
 }
-
