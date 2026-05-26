@@ -56,6 +56,7 @@ function effectiveToConfig(rows: TemplateFieldEffective[]): TemplateUiFieldConfi
   return rows.map((r) => ({
     storageKey: r.storageKey,
     label: r.label,
+    description: r.description,
     hidden: r.hidden,
     inputKind: r.inputKind,
     unit: r.unit,
@@ -398,10 +399,12 @@ export default function SettingsPage() {
   }
 
   return (
-    <div className="flex w-full min-w-0 flex-col gap-4">
-      <h1 className="text-xl font-bold text-gray-900 sm:text-2xl">설정</h1>
+    <div className="mx-auto flex w-full max-w-[720px] min-w-0 flex-col gap-5 lg:max-w-none">
+      <h1 className="text-[28px] font-bold leading-tight text-[#111827] sm:text-3xl">
+        내정보
+      </h1>
       <Tabs defaultValue="template" className="w-full gap-4">
-        <TabsList className="h-auto w-full justify-start gap-1 rounded-xl border border-gray-200 bg-gray-50 p-1 sm:w-auto">
+        <TabsList className="h-auto w-full justify-start gap-1 overflow-x-auto rounded-xl border border-[#E5E7EB] bg-[#F3F4F6] p-1 sm:w-auto">
           <TabsTrigger
             value="template"
             className="rounded-lg px-4 py-2 data-[state=active]:bg-white data-[state=active]:shadow-sm"
@@ -418,7 +421,7 @@ export default function SettingsPage() {
             value="account"
             className="rounded-lg px-4 py-2 data-[state=active]:bg-white data-[state=active]:shadow-sm"
           >
-            계정
+            내 계정
           </TabsTrigger>
         </TabsList>
         <TabsContent value="template" className="mt-0">
@@ -660,9 +663,8 @@ export function TemplateSettingsSection({
   const templateFieldsQuery = useMergedTemplateFieldsQuery(templateId);
   const templateOptions = useMemo(() => {
     const ids = Object.keys(templatesMapQuery.data ?? {});
-    if (templatesMapQuery.isSuccess && ids.length === 0) return [];
     return ids.length > 0 ? ids : [...VOICE_RECORD_TEMPLATES];
-  }, [templatesMapQuery.data, templatesMapQuery.isSuccess]);
+  }, [templatesMapQuery.data]);
   const templateLocked = isBuiltinLockedVoiceTemplate(templateId);
 
   const putTemplateMutation = usePutTemplateUiMutation(token);
@@ -790,7 +792,7 @@ export function TemplateSettingsSection({
       >
         {templateOptions.map((t) => (
           <option key={t} value={t}>
-            {t}
+            {templatesMapQuery.data?.[t]?.displayTitle || t}
           </option>
         ))}
       </select>

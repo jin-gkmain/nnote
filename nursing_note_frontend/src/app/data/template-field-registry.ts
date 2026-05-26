@@ -233,30 +233,43 @@ const SBAR_DEFAULTS: readonly TemplateFieldDefault[] = [
 ];
 
 const CLINICAL_DEFAULTS: readonly TemplateFieldDefault[] = [
-  { storageKey: "진료일시", label: "진료일시", inputKind: "date" },
-  { storageKey: "작성자성명", label: "작성자 성명", inputKind: "text_short" },
-  { storageKey: "진료과", label: "진료과", inputKind: "text_short" },
+  { storageKey: "진료일시", label: "기본 · 진료일시", inputKind: "date" },
+  { storageKey: "작성자성명", label: "기본 · 작성자 성명", inputKind: "text_short" },
+  { storageKey: "진료과", label: "기본 · 진료과", inputKind: "text_short" },
   {
     storageKey: "내과세부진료과목",
-    label: "내과 세부 진료 과목",
+    label: "기본 · 내과 세부 진료과목",
     inputKind: "text_short",
   },
-  {
-    storageKey: "observation",
-    label: "관찰 내용",
-    description: "임상 관찰 내용",
-    inputKind: "text_long",
-  },
-  {
-    storageKey: "nursingAction",
-    label: "간호 수행",
-    inputKind: "text_long",
-  },
-  {
-    storageKey: "handoverNote",
-    label: "인계 메모",
-    inputKind: "text_long",
-  },
+  { storageKey: "활력징후.측정일시", label: "활력징후 · 측정일시", inputKind: "text_short" },
+  { storageKey: "활력징후.혈압", label: "활력징후 · 혈압", inputKind: "text_short" },
+  { storageKey: "활력징후.맥박", label: "활력징후 · 맥박", inputKind: "number" },
+  { storageKey: "활력징후.체온", label: "활력징후 · 체온", inputKind: "number" },
+  { storageKey: "활력징후.호흡", label: "활력징후 · 호흡", inputKind: "number" },
+  { storageKey: "활력징후.산소포화도", label: "활력징후 · 산소포화도", inputKind: "number", unit: "%" },
+  { storageKey: "활력징후.혈당", label: "활력징후 · 혈당", inputKind: "number", unit: "mg/dL" },
+  { storageKey: "신체계측.측정일시", label: "신체계측 · 측정일시", inputKind: "text_short" },
+  { storageKey: "신체계측.체중", label: "신체계측 · 체중", inputKind: "number", unit: "kg" },
+  { storageKey: "신체계측.신장", label: "신체계측 · 신장", inputKind: "number", unit: "cm" },
+  { storageKey: "신체계측.두위", label: "신체계측 · 두위", inputKind: "number", unit: "cm" },
+  { storageKey: "신체계측.흉위", label: "신체계측 · 흉위", inputKind: "number", unit: "cm" },
+  { storageKey: "신체계측.복위", label: "신체계측 · 복위", inputKind: "number", unit: "cm" },
+  { storageKey: "신체계측.특이사항", label: "신체계측 · 특이사항", inputKind: "text_long" },
+  { storageKey: "섭취배설.측정시작일시", label: "섭취·배설 · 측정 시작 일시", inputKind: "text_short" },
+  { storageKey: "섭취배설.측정종료일시", label: "섭취·배설 · 측정 종료 일시", inputKind: "text_short" },
+  { storageKey: "섭취배설.특이사항", label: "섭취·배설 · 특이사항", inputKind: "text_long" },
+  { storageKey: "섭취배설.섭취_총량", label: "섭취·배설 · 섭취 총량", inputKind: "number", unit: "mL" },
+  { storageKey: "섭취배설.섭취_정맥", label: "섭취·배설 · 섭취 정맥", inputKind: "number", unit: "mL" },
+  { storageKey: "섭취배설.섭취_기타", label: "섭취·배설 · 섭취 기타", inputKind: "number", unit: "mL" },
+  { storageKey: "섭취배설.배설_총량", label: "섭취·배설 · 배설 총량", inputKind: "number", unit: "mL" },
+  { storageKey: "섭취배설.배설_배뇨", label: "섭취·배설 · 배설 배뇨", inputKind: "number", unit: "mL" },
+  { storageKey: "섭취배설.배설_기타", label: "섭취·배설 · 배설 기타", inputKind: "number", unit: "mL" },
+  { storageKey: "기타관찰.측정일시", label: "기타 관찰 · 측정일시", inputKind: "text_short" },
+  { storageKey: "기타관찰.항목명", label: "기타 관찰 · 항목명", inputKind: "text_short" },
+  { storageKey: "기타관찰.관찰내용", label: "기타 관찰 · 관찰내용", inputKind: "text_long" },
+  { storageKey: "기타관찰.특이사항", label: "기타 관찰 · 특이사항", inputKind: "text_long" },
+  { storageKey: "추가정보.간병유무", label: "추가 정보 · 간병 유무", inputKind: "text_short" },
+  { storageKey: "추가정보.도뇨관리", label: "추가 정보 · 도뇨 관리", inputKind: "text_short" },
 ];
 
 const SINGLE_CONTENT: readonly TemplateFieldDefault[] = [
@@ -357,9 +370,12 @@ export function mergeTemplateFieldOverrides(
     for (const [columnName, def] of Object.entries(columns ?? {})) {
       const t = def?.type ?? "text_long";
       const opts = isChoiceTemplateValueType(t) ? { ...(def?.options ?? {}) } : undefined;
+      const displayColumnName = columnName.startsWith(`${sectionName}.`)
+        ? columnName.slice(sectionName.length + 1)
+        : columnName;
       fields.push({
         storageKey: columnName,
-        label: `${sectionName} · ${columnName}`,
+        label: `${sectionName} · ${displayColumnName}`,
         description: def?.description ?? "",
         inputKind: t,
         hidden: false,
@@ -462,10 +478,11 @@ export async function fetchTemplateSectionPresets(token: string): Promise<Templa
 
 /** 어드민 화면에서 단일 섹션으로 묶어 저장할 때 사용 */
 export function fieldConfigsToSectionMap(fields: TemplateUiFieldConfig[]): TemplateSectionMap {
-  const sectionName = "1. 기본 항목";
-  const section: Record<string, TemplateColumnDef> = {};
+  const out: TemplateSectionMap = {};
   for (const field of fields) {
     if (field.hidden) continue;
+    const { section: sectionName } = splitTemplateLabel(field.label);
+    if (!out[sectionName]) out[sectionName] = {};
     const def: TemplateColumnDef = { type: field.inputKind };
     if (field.description && field.description.trim()) {
       def.description = field.description.trim();
@@ -474,9 +491,9 @@ export function fieldConfigsToSectionMap(fields: TemplateUiFieldConfig[]): Templ
       def.options =
         field.options && Object.keys(field.options).length > 0 ? { ...field.options } : {};
     }
-    section[field.storageKey] = def;
+    out[sectionName][field.storageKey] = def;
   }
-  return { [sectionName]: section };
+  return out;
 }
 
 export function invalidateTemplateUiConfigCache(): void {

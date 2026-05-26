@@ -25,18 +25,7 @@ import { TemplateFieldControl } from "@/app/components/template-field-control";
 const SUPPORTED_EXTENSIONS = "JPG, JPEG, PNG, PDF";
 const MAX_FILE_SIZE_MB = 10;
 
-interface OcrPagePatient {
-  id: string;
-  name: string;
-  patientNumber: string;
-  roomNumber: string;
-}
-
-interface OcrPageProps {
-  patients: OcrPagePatient[];
-}
-
-export default function OcrPage({ patients }: OcrPageProps) {
+export default function OcrPage() {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [previewUrl, setPreviewUrl] = useState("");
   const [scanResult, setScanResult] = useState("");
@@ -50,7 +39,6 @@ export default function OcrPage({ patients }: OcrPageProps) {
   const [generationMessage, setGenerationMessage] = useState("");
   const [templateFields, setTemplateFields] = useState<Record<string, string>>({});
   const [modalFieldLayout, setModalFieldLayout] = useState<TemplateFieldEffective[]>([]);
-  const [selectedPatientId, setSelectedPatientId] = useState("");
   const [isSavingTemplate, setIsSavingTemplate] = useState(false);
   const [isFillingFromAi, setIsFillingFromAi] = useState(false);
   const [ocrRecordTitle, setOcrRecordTitle] = useState("");
@@ -64,11 +52,6 @@ export default function OcrPage({ patients }: OcrPageProps) {
     if (templatesMapQuery.isSuccess && ids.length === 0) return [];
     return ids.length > 0 ? ids : [...VOICE_RECORD_TEMPLATES];
   }, [templatesMapQuery.data, templatesMapQuery.isSuccess]);
-
-  const selectedPatient = useMemo(
-    () => patients.find((patient) => patient.id === selectedPatientId) ?? null,
-    [patients, selectedPatientId],
-  );
 
   const selectedFileSummary = useMemo(() => {
     if (!selectedFile) return "선택된 파일이 없습니다.";
@@ -142,10 +125,6 @@ export default function OcrPage({ patients }: OcrPageProps) {
 
   async function openTemplateModal() {
     if (!scanResult.trim()) return;
-    if (!selectedPatient) {
-      setGenerationMessage("환자를 먼저 선택해 주세요.");
-      return;
-    }
     setIsFillingFromAi(true);
     setGenerationMessage("");
     const merged = mergedTemplateQuery.data ?? [];
@@ -171,7 +150,6 @@ export default function OcrPage({ patients }: OcrPageProps) {
         });
         setOcrRecordTitle(
           buildDefaultRecordTitle({
-            patientName: selectedPatient.name,
             classificationLabel: classificationLabelForTemplate(
               selectedTemplate,
               templatesMapQuery.data,
@@ -198,7 +176,6 @@ export default function OcrPage({ patients }: OcrPageProps) {
         });
         setOcrRecordTitle(
           buildDefaultRecordTitle({
-            patientName: selectedPatient.name,
             classificationLabel: classificationLabelForTemplate(
               selectedTemplate,
               templatesMapQuery.data,
@@ -215,10 +192,6 @@ export default function OcrPage({ patients }: OcrPageProps) {
   }
 
   async function handleSaveTemplate() {
-    if (!selectedPatient) {
-      setGenerationMessage("환자를 먼저 선택해 주세요.");
-      return;
-    }
     const title = ocrRecordTitle.trim().slice(0, 512);
     if (!title) {
       setGenerationMessage("기록 제목을 입력해 주세요.");
@@ -239,7 +212,6 @@ export default function OcrPage({ patients }: OcrPageProps) {
         스캔저장시각: new Date().toISOString(),
       };
       await createRecordMutation.mutateAsync({
-        patientId: selectedPatient.id,
         body: {
           recordType: selectedTemplate,
           documentNumber,
@@ -264,10 +236,12 @@ export default function OcrPage({ patients }: OcrPageProps) {
   }
 
   return (
-    <div className="flex min-h-[calc(100dvh-7.5rem)] w-full flex-col text-left">
-      <h1 className="mb-4 text-xl font-bold text-gray-900 sm:mb-6 sm:text-2xl">OCR 스캔</h1>
+    <div className="mx-auto flex min-h-[calc(100dvh-7.5rem)] w-full max-w-[720px] flex-col text-left lg:max-w-none">
+      <h1 className="mb-5 text-[28px] font-bold leading-tight text-[#111827] sm:mb-6 sm:text-3xl">
+        OCR
+      </h1>
       <div className="grid min-h-0 flex-1 grid-cols-1 gap-6 lg:grid-cols-[4fr_6fr] lg:gap-8">
-        <section className="flex min-h-0 min-w-0 flex-col rounded-xl border border-gray-200 bg-white p-4 shadow-sm sm:p-5">
+        <section className="mobile-app-card flex min-h-0 min-w-0 flex-col p-4 sm:p-5">
           <h2 className="text-sm font-semibold text-gray-900">파일 선택</h2>
           <div className="mt-4 rounded-lg border border-dashed border-gray-300 bg-gray-50 p-4">
             <label
@@ -302,13 +276,13 @@ export default function OcrPage({ patients }: OcrPageProps) {
               type="button"
               onClick={handleScanFile}
               disabled={isScanning}
-              className="w-full rounded-xl bg-blue-600 py-3 text-sm font-semibold text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-blue-300"
+              className="w-full rounded-lg bg-[#3B82F6] py-3 text-sm font-bold text-white transition-colors hover:bg-[#2563EB] disabled:cursor-not-allowed disabled:bg-blue-300"
             >
               {isScanning ? "스캔 중..." : "스캔하기"}
             </button>
           </div>
         </section>
-        <section className="flex min-h-0 min-w-0 flex-col rounded-xl border border-gray-200 bg-white p-4 shadow-sm sm:p-5">
+        <section className="mobile-app-card flex min-h-0 min-w-0 flex-col p-4 sm:p-5">
           <div className="mb-4 flex items-center justify-between">
             <h2 className="text-sm font-semibold text-gray-900">스캔 결과</h2>
             <button
@@ -328,19 +302,6 @@ export default function OcrPage({ patients }: OcrPageProps) {
           />
           {scanResult.trim() ? (
             <div className="mt-4 rounded-lg border border-gray-200 bg-gray-50 p-4">
-              <p className="mb-2 text-sm font-medium text-gray-800">환자 선택</p>
-              <select
-                value={selectedPatientId}
-                onChange={(event) => setSelectedPatientId(event.target.value)}
-                className="mb-3 h-10 w-full rounded-lg border border-gray-300 bg-white px-3 text-sm text-gray-900"
-              >
-                <option value="">환자를 선택해 주세요</option>
-                {patients.map((patient) => (
-                  <option key={patient.id} value={patient.id}>
-                    {patient.name} · {patient.patientNumber} · {patient.roomNumber}
-                  </option>
-                ))}
-              </select>
               <p className="mb-2 text-sm font-medium text-gray-800">템플릿 선택</p>
               <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
                 <select
@@ -360,7 +321,7 @@ export default function OcrPage({ patients }: OcrPageProps) {
                   type="button"
                   onClick={() => void openTemplateModal()}
                   disabled={isFillingFromAi}
-                  className="rounded-lg bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-blue-300"
+                  className="rounded-lg bg-[#3B82F6] px-4 py-2.5 text-sm font-bold text-white hover:bg-[#2563EB] disabled:cursor-not-allowed disabled:bg-blue-300"
                 >
                   {isFillingFromAi ? "AI 생성 중..." : "생성하기"}
                 </button>
@@ -382,7 +343,6 @@ export default function OcrPage({ patients }: OcrPageProps) {
       {isTemplateModalOpen ? (
         <TemplateGenerateModal
           selectedTemplate={selectedTemplate}
-          patientId={selectedPatient ? Number(selectedPatient.id) : undefined}
           editorFields={modalFieldLayout}
           fields={templateFields}
           recordTitle={ocrRecordTitle}
@@ -402,7 +362,6 @@ export default function OcrPage({ patients }: OcrPageProps) {
 
 interface TemplateGenerateModalProps {
   selectedTemplate: VoiceRecordTemplateId;
-  patientId?: number;
   editorFields: TemplateFieldEffective[];
   fields: Record<string, string>;
   recordTitle: string;
@@ -416,7 +375,6 @@ interface TemplateGenerateModalProps {
 
 function TemplateGenerateModal({
   selectedTemplate,
-  patientId,
   editorFields,
   fields,
   recordTitle,
@@ -483,7 +441,6 @@ function TemplateGenerateModal({
                       <TemplateFieldControl
                         field={field}
                         templateId={selectedTemplate}
-                        patientId={patientId}
                         value={fields[field.storageKey] ?? ""}
                         onChange={(nextValue) => onChangeField(field.storageKey, nextValue)}
                         classNameInputShort="h-11 w-full rounded-lg border border-gray-300 px-3 text-sm text-gray-900"
@@ -535,4 +492,3 @@ function createInitialFromFields(
   if (fields[0]) initialFields[fields[0].storageKey] = scanResult;
   return initialFields;
 }
-

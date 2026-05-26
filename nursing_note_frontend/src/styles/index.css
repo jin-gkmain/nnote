@@ -16,6 +16,7 @@ html {
   --nursing-app-header-offset: calc(
     env(safe-area-inset-top, 0px) + 3.25rem + 0.5rem
   );
+  --nursing-mobile-tabbar-height: 5.25rem;
 }
 
 @media (min-width: 768px) {
@@ -26,6 +27,21 @@ html {
 
 textarea {
   resize: none;
+}
+
+body {
+  background: #f9fafb;
+}
+
+.mobile-app-card {
+  border: 1px solid #e5e7eb;
+  border-radius: 0.75rem;
+  background: #ffffff;
+  box-shadow: 0 2px 8px rgba(17, 24, 39, 0.08);
+}
+
+.mobile-safe-bottom {
+  padding-bottom: calc(var(--nursing-mobile-tabbar-height) + env(safe-area-inset-bottom, 0px));
 }
 
 /* 모바일·좁은 화면: 대시보드 기록 테이블 가로 스크롤바 — 두께↑, 옅은 회색 */

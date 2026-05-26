@@ -1,13 +1,10 @@
-import { IsNumber, IsString, IsOptional, IsObject, IsIn, MaxLength } from 'class-validator';
+import { IsString, IsOptional, IsObject, IsIn, MaxLength } from 'class-validator';
 
 /**
  * 통합 기록 생성 DTO
  * - data: JSON 객체(중첩/한글 키 허용). 없으면 {}로 저장
  */
 export class CreateRecordDto {
-  @IsNumber()
-  patientId: number;
-
   @IsString()
   recordType: string;
 
@@ -31,8 +28,8 @@ export class CreateRecordDto {
 
   /** manual | voice | ai | ocr — 대시보드 통계용 */
   @IsOptional()
-  @IsIn(['manual', 'voice', 'ai', 'ocr'])
-  creationSource?: 'manual' | 'voice' | 'ai' | 'ocr';
+  @IsIn(['manual', 'voice', 'ai', 'ocr', 'record_based'])
+  creationSource?: 'manual' | 'voice' | 'ai' | 'ocr' | 'record_based';
 }
 
 export class UpdateRecordDto {

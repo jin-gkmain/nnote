@@ -5,8 +5,6 @@ interface InputAssistFieldProps {
   fieldKey: string;
   value: string;
   onChange: (value: string) => void;
-  patientId?: number | null;
-  patientContext?: string;
   recentRecordContext?: string;
   className: string;
   rows?: number;
@@ -23,8 +21,6 @@ export function InputAssistField({
   fieldKey,
   value,
   onChange,
-  patientId,
-  patientContext,
   recentRecordContext,
   className,
   rows,
@@ -38,8 +34,6 @@ export function InputAssistField({
     templateId,
     fieldKey,
     currentText: value,
-    patientId,
-    patientContext,
     recentRecordContext,
     disabled: readOnly || type === "number",
     settingsOverride,

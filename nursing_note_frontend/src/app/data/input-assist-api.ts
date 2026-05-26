@@ -35,8 +35,6 @@ export interface AutocompleteRequestPayload {
   templateId: string;
   fieldKey: string;
   currentText: string;
-  patientId?: number;
-  patientContext?: string;
   recentRecordContext?: string;
 }
 

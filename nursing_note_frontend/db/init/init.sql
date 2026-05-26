@@ -131,23 +131,18 @@ CREATE TABLE IF NOT EXISTS clinical_observations (
 -- -----------------------------------------------------
 CREATE TABLE IF NOT EXISTS records (
   id              BIGINT        NOT NULL AUTO_INCREMENT,
-  patient_id      BIGINT        NOT NULL COMMENT '환자 FK',
+  patient_id      BIGINT        NULL COMMENT '레거시 환자 FK',
   record_type     VARCHAR(30)   NOT NULL COMMENT '분류: 간호기록지, 간호인계기록지, 임상관찰기록지',
   title           VARCHAR(512)  NOT NULL DEFAULT '' COMMENT '사용자 지정 기록 제목',
   document_number VARCHAR(20)   NOT NULL COMMENT '문서번호',
   record_date     DATE          NOT NULL COMMENT '기록 날짜',
   record_time     TIME          NOT NULL COMMENT '기록 시간',
   data            JSON          NOT NULL COMMENT '기록 내용 (JSON)',
-  creation_source ENUM('manual','voice','ai','ocr') NOT NULL DEFAULT 'manual' COMMENT '생성 경로: 직접/음성/AI/OCR',
+  creation_source ENUM('manual','voice','ai','ocr','record_based') NOT NULL DEFAULT 'manual' COMMENT '생성 경로: 직접/음성/AI/OCR/기록기반',
   emr_sync_status ENUM('pending','sent') NOT NULL DEFAULT 'pending' COMMENT 'EMR 연동: 전송 전/후',
   created_at      TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at      TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
-  KEY idx_records_patient (patient_id),
   KEY idx_records_type    (record_type),
-  KEY idx_records_date    (record_date),
-  CONSTRAINT fk_records_patient
-    FOREIGN KEY (patient_id) REFERENCES patients (id)
-    ON DELETE CASCADE
-    ON UPDATE CASCADE
+  KEY idx_records_date    (record_date)
 ) ENGINE=InnoDB COMMENT='통합 기록 (JSON + record_type)';

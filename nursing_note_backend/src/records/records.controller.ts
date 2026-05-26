@@ -50,6 +50,12 @@ export class RecordsController {
     });
   }
 
+  /** 대시보드: 기록 중심 통계 */
+  @Get('stats')
+  getStats() {
+    return this.service.getStats();
+  }
+
   /** 대시보드: 최근 생성 기록 */
   @Get('recent/created')
   findRecentCreated(@Query('limit') raw?: string) {

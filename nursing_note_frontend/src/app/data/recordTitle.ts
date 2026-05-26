@@ -13,20 +13,14 @@ export function classificationLabelForTemplate(
 }
 
 /**
- * 기본 제목: 환자명-기록지분류-YYYY.M.D HH:mm
+ * 기본 제목: 기록지분류-YYYY.M.D HH:mm
  * - recordDate: YYYY-MM-DD, recordTime: HH:mm 또는 HH:mm:ss
  */
 export function buildDefaultRecordTitle(opts: {
-  patientName: string;
   classificationLabel: string;
   recordDate: string;
   recordTime: string;
 }): string {
-  const name =
-    String(opts.patientName ?? "")
-      .replace(/-/g, " ")
-      .replace(/_/g, " ")
-      .trim() || "—";
   const cls = String(opts.classificationLabel ?? "").trim() || "—";
   const dateRaw = String(opts.recordDate ?? "").trim();
   const m = dateRaw.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
@@ -42,5 +36,5 @@ export function buildDefaultRecordTitle(opts: {
   const tm = timeRaw.match(/(\d{1,2}):(\d{1,2})/);
   const hh = tm ? tm[1]!.padStart(2, "0") : String(now.getHours()).padStart(2, "0");
   const mm = tm ? tm[2]!.padStart(2, "0") : String(now.getMinutes()).padStart(2, "0");
-  return `${name}-${cls}-${dateStr} ${hh}:${mm}`;
+  return `${cls}-${dateStr} ${hh}:${mm}`;
 }

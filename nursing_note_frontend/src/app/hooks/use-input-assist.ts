@@ -9,8 +9,6 @@ interface UseInputAssistParams {
   templateId: string;
   fieldKey: string;
   currentText: string;
-  patientId?: number | null;
-  patientContext?: string;
   recentRecordContext?: string;
   disabled?: boolean;
   /** 설정 화면 등: 저장 전 편집 중인 활성화·약어로 미리 테스트할 때 전달 */
@@ -69,8 +67,6 @@ export function useInputAssist(params: UseInputAssistParams): UseInputAssistResu
           templateId: params.templateId,
           fieldKey: params.fieldKey,
           currentText: params.currentText,
-          patientId: params.patientId ?? undefined,
-          patientContext: params.patientContext,
           recentRecordContext: params.recentRecordContext,
         });
         if (abortRef.current) return;
@@ -88,8 +84,6 @@ export function useInputAssist(params: UseInputAssistParams): UseInputAssistResu
     params.currentText,
     params.disabled,
     params.fieldKey,
-    params.patientContext,
-    params.patientId,
     params.recentRecordContext,
     params.templateId,
     effectiveEnabled,

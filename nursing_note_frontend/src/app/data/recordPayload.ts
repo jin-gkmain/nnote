@@ -15,6 +15,32 @@ interface BuiltRecordPayload {
   data: Record<string, unknown>;
 }
 
+function setNestedValue(
+  target: Record<string, unknown>,
+  keyPath: string,
+  value: unknown,
+): void {
+  const parts = keyPath
+    .split(".")
+    .map((part) => part.trim())
+    .filter(Boolean);
+  if (parts.length <= 1) {
+    target[keyPath] = value;
+    return;
+  }
+
+  let cursor = target;
+  for (let i = 0; i < parts.length - 1; i += 1) {
+    const key = parts[i]!;
+    const next = cursor[key];
+    if (!next || typeof next !== "object" || Array.isArray(next)) {
+      cursor[key] = {};
+    }
+    cursor = cursor[key] as Record<string, unknown>;
+  }
+  cursor[parts[parts.length - 1]!] = value;
+}
+
 /**
  * 기록 편집/저장 시 폼 데이터를 API payload 형태로 표준화한다.
  * - 화면별 중복 매핑 로직을 한 곳으로 모아 유지보수성을 높인다.
@@ -39,7 +65,7 @@ export function buildRecordPayload(
   if (dynamicFieldKeys.length > 0) {
     const dynamicData: Record<string, unknown> = {};
     for (const key of dynamicFieldKeys) {
-      dynamicData[key] = content[key] ?? "";
+      setNestedValue(dynamicData, key, content[key] ?? "");
     }
     return { documentNumber, recordDate, recordTime, data: dynamicData };
   }

@@ -20,16 +20,11 @@ export const queryKeys = {
   inputAssist: {
     settings: (token: string | null) => ["input-assist", "settings", token ?? "anonymous"] as const,
   },
-  patients: {
-    all: ["patients"] as const,
-    detail: (patientId: string) => ["patients", "detail", patientId] as const,
-    stats: ["patients", "stats"] as const,
-  },
   records: {
+    stats: ["records", "stats"] as const,
     list: (params: { page: number; pageSize: number; sort: RecordListSort; search: string }) =>
       ["records", "list", params] as const,
     detail: (recordId: number) => ["records", "detail", recordId] as const,
-    patient: (patientId: string) => ["records", "patient", patientId] as const,
     recentCreated: (limit: number) => ["records", "recent-created", limit] as const,
     recentUpdated: (limit: number) => ["records", "recent-updated", limit] as const,
     mergedForSummary: (limit: number) => ["records", "merged-summary", limit] as const,

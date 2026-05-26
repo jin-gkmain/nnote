@@ -1,12 +1,14 @@
 import { useMemo, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight } from "lucide-react";
+import { useNavigate } from "react-router-dom";
 import { RecordDetailOverlay } from "@/app/components/record-detail-overlay";
 import {
   type RecordListItem,
   type RecordListSort,
 } from "@/app/data/nursingRecords";
 import { classificationLabelForTemplate } from "@/app/data/recordTitle";
+import { ROUTES } from "@/app/navigation/routes";
 import { queryKeys } from "@/app/query/query-keys";
 import { useRecordListPageQuery, useTemplatesMapQuery } from "@/app/query/use-app-query";
 
@@ -25,21 +27,16 @@ function formatStatus(emrSyncStatus: "pending" | "sent"): string {
   return emrSyncStatus === "sent" ? "전송완료" : "대기";
 }
 
-function formatCreationSource(source: "manual" | "voice" | "ai" | "ocr"): string {
+function formatCreationSource(source: RecordListItem["creationSource"]): string {
   if (source === "voice") return "음성";
+  if (source === "record_based") return "기록기반";
   if (source === "ai") return "AI";
   if (source === "ocr") return "OCR";
   return "직접";
 }
 
-interface NursingRecordListPageProps {
-  /** 퇴원 등으로 환자 캐시가 바뀌었을 때 상위에서 환자 목록 등 갱신 */
-  readonly onPatientsMutated?: () => void;
-}
-
-export default function NursingRecordListPage({
-  onPatientsMutated,
-}: NursingRecordListPageProps) {
+export default function NursingRecordListPage() {
+  const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [page, setPage] = useState(1);
   const [sort, setSort] = useState<RecordListSort>("record_date_desc");
@@ -75,19 +72,29 @@ export default function NursingRecordListPage({
   const jumpToNextBlock = () => setPage(Math.min(totalPages, blockStart + PAGE_BLOCK_SIZE));
 
   return (
-    <div className="flex min-h-[calc(100dvh-7.5rem)] flex-col">
+    <div className="mx-auto flex min-h-[calc(100dvh-7.5rem)] w-full max-w-[720px] flex-col lg:max-w-none">
       <RecordDetailOverlay
         recordId={detailRecordId}
         onClose={() => setDetailRecordId(null)}
         onRecordChanged={() => {
-          onPatientsMutated?.();
           void queryClient.invalidateQueries({
             queryKey: queryKeys.records.list({ page, pageSize: PAGE_SIZE, sort, search: searchKeyword }),
           });
         }}
       />
-      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-        <h1 className="text-xl font-bold text-gray-900 sm:text-2xl">기록 목록</h1>
+      <div className="mb-5 flex flex-col gap-4">
+        <div className="flex items-center justify-between gap-3">
+          <h1 className="text-[28px] font-bold leading-tight text-[#111827] sm:text-3xl">
+            기록목록
+          </h1>
+          <button
+            type="button"
+            onClick={() => navigate(ROUTES.aiSummary)}
+            className="h-10 shrink-0 rounded-lg bg-[#3B82F6] px-4 text-sm font-bold text-white shadow-sm hover:bg-[#2563EB]"
+          >
+            기록기반 생성
+          </button>
+        </div>
         <div className="flex w-full min-w-0 flex-wrap items-center gap-2 sm:w-auto">
           <input
             value={searchInput}
@@ -97,8 +104,8 @@ export default function NursingRecordListPage({
               setSearchKeyword(searchInput.trim());
               setPage(1);
             }}
-            placeholder="기록번호 / 제목 / 환자명 검색"
-            className="h-10 min-w-0 flex-1 rounded-lg border border-gray-200 bg-white px-3 text-sm text-gray-800 sm:w-64 sm:flex-none"
+            placeholder="기록번호 / 제목 / 분류 검색"
+            className="h-11 min-w-0 flex-1 rounded-lg border border-[#E5E7EB] bg-white px-3 text-sm text-[#111827] shadow-sm sm:w-64 sm:flex-none"
           />
           <button
             type="button"
@@ -106,7 +113,7 @@ export default function NursingRecordListPage({
               setSearchKeyword(searchInput.trim());
               setPage(1);
             }}
-            className="h-10 rounded-lg border border-gray-200 bg-white px-3 text-sm text-gray-700 hover:bg-gray-50"
+            className="h-11 rounded-lg border border-[#E5E7EB] bg-white px-4 text-sm font-semibold text-[#374151] shadow-sm hover:bg-[#EFF6FF]"
           >
             검색
           </button>
@@ -116,7 +123,7 @@ export default function NursingRecordListPage({
               setSort(e.target.value as RecordListSort);
               setPage(1);
             }}
-            className="h-10 rounded-lg border border-gray-200 bg-white px-3 text-sm text-gray-800"
+            className="h-11 w-full rounded-lg border border-[#E5E7EB] bg-white px-3 text-sm text-[#111827] shadow-sm sm:w-auto"
           >
             {SORT_OPTIONS.map((opt) => (
               <option key={opt.value} value={opt.value}>
@@ -127,23 +134,70 @@ export default function NursingRecordListPage({
         </div>
       </div>
 
-      <div className="dashboard-table-scroll-x min-h-0 flex-1 overflow-auto overscroll-contain rounded-xl border border-gray-200 bg-white [-webkit-overflow-scrolling:touch]">
+      <div className="flex flex-col gap-4 lg:hidden">
+        {isLoading ? (
+          <div className="mobile-app-card px-5 py-10 text-center text-sm text-[#9CA3AF]">
+            기록 목록을 불러오는 중...
+          </div>
+        ) : rows.length === 0 ? (
+          <div className="mobile-app-card px-5 py-10 text-center text-sm text-[#9CA3AF]">
+            표시할 기록이 없습니다.
+          </div>
+        ) : (
+          rows.map((row) => (
+            <button
+              key={`${row.id}-${row.clientRecordId}-mobile`}
+              type="button"
+              onClick={() => setDetailRecordId(row.id)}
+              className="mobile-app-card w-full px-5 py-4 text-left transition-transform active:scale-[0.99]"
+            >
+              <div className="flex items-start justify-between gap-3">
+                <span
+                  className={
+                    row.emrSyncStatus === "sent"
+                      ? "rounded-md bg-[#10B981] px-2.5 py-1 text-xs font-semibold text-white"
+                      : "rounded-md border border-[#10B981] bg-[#ECFDF5] px-2.5 py-1 text-xs font-semibold text-[#059669]"
+                  }
+                >
+                  {formatStatus(row.emrSyncStatus)}
+                </span>
+                <span className="shrink-0 text-xs text-[#9CA3AF]">
+                  {row.recordDateTime}
+                </span>
+              </div>
+              <p className="mt-3 truncate text-base font-medium text-[#111827]">
+                {row.documentNumber}-{row.title}
+              </p>
+              <div className="mt-5 flex items-center justify-between gap-3 text-xs text-[#9CA3AF]">
+                <span className="truncate">
+                  {formatCreationSource(row.creationSource)} /{" "}
+                  {classificationLabelForTemplate(
+                    row.recordType,
+                    templatesMapQuery.data,
+                  )}
+                </span>
+                <ChevronRight className="h-4 w-4 shrink-0 text-[#111827]" />
+              </div>
+            </button>
+          ))
+        )}
+      </div>
+
+      <div className="dashboard-table-scroll-x hidden min-h-0 flex-1 overflow-auto overscroll-contain rounded-xl border border-gray-200 bg-white [-webkit-overflow-scrolling:touch] lg:block">
         <table className="min-w-[900px] w-full table-fixed border-collapse">
           <colgroup>
-            <col className="w-[10%]" />
             <col className="w-[13%]" />
-            <col className="w-[10%]" />
-            <col className="w-[22%]" />
-            <col className="w-[12%]" />
+            <col className="w-[16%]" />
+            <col className="w-[31%]" />
+            <col className="w-[14%]" />
             <col className="w-[9%]" />
             <col className="w-[9%]" />
-            <col className="w-[15%]" />
+            <col className="w-[8%]" />
           </colgroup>
           <thead className="sticky top-0 z-[1] bg-[#e8f0ff]">
             <tr className="text-left text-sm text-blue-700 sm:text-base">
               <th className="px-4 py-3 align-middle font-semibold whitespace-nowrap">기록번호</th>
               <th className="px-4 py-3 align-middle font-semibold whitespace-nowrap">기록일시</th>
-              <th className="px-4 py-3 align-middle font-semibold whitespace-nowrap">환자명</th>
               <th className="px-4 py-3 align-middle font-semibold">제목</th>
               <th className="px-4 py-3 align-middle font-semibold">분류</th>
               <th className="px-4 py-3 align-middle font-semibold whitespace-nowrap">상태</th>
@@ -156,13 +210,13 @@ export default function NursingRecordListPage({
           <tbody>
             {isLoading ? (
               <tr>
-                <td className="px-4 py-8 text-sm text-gray-500" colSpan={8}>
+                <td className="px-4 py-8 text-sm text-gray-500" colSpan={7}>
                   기록 목록을 불러오는 중...
                 </td>
               </tr>
             ) : rows.length === 0 ? (
               <tr>
-                <td className="px-4 py-8 text-sm text-gray-500" colSpan={8}>
+                <td className="px-4 py-8 text-sm text-gray-500" colSpan={7}>
                   표시할 기록이 없습니다.
                 </td>
               </tr>
@@ -174,11 +228,6 @@ export default function NursingRecordListPage({
                   </td>
                   <td className="px-4 py-3 align-middle text-sm text-gray-700 whitespace-nowrap">
                     {row.recordDateTime}
-                  </td>
-                  <td className="px-4 py-3 align-middle text-sm text-gray-900">
-                    <span className="block truncate" title={row.patient.name}>
-                      {row.patient.name}
-                    </span>
                   </td>
                   <td className="px-4 py-3 align-middle text-sm text-gray-900">
                     <span className="block truncate" title={row.title}>

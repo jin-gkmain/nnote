@@ -86,7 +86,22 @@ services:
       retries: 5
       start_period: 20s
 
-  # --- 4. Nginx 프론트엔드 (+ 리버스 프록시) ---
+  # --- 4. WhisperLiveKit real-time STT service ---
+  live-stt:
+    build: ./nursing_note_live_stt_service
+    container_name: nursing-note-live-stt
+    restart: unless-stopped
+    environment:
+      WHISPERLIVEKIT_MODEL: ${WHISPERLIVEKIT_MODEL:-base}
+      WHISPERLIVEKIT_LANGUAGE: ${WHISPERLIVEKIT_LANGUAGE:-ko}
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health')\""]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+  # --- 5. Nginx 프론트엔드 (+ 리버스 프록시) ---
   frontend:
     build: ./nursing_note_frontend
     container_name: nursing-note-frontend
@@ -96,6 +111,7 @@ services:
       - "3000:80"
     depends_on:
       - backend
+      - live-stt
 
 volumes:
   db_data:

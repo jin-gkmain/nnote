@@ -26,16 +26,47 @@ export class RecordsService implements OnModuleInit {
   async onModuleInit(): Promise<void> {
     const conn = await this.pool.getConnection();
     try {
+      try {
+        const constraints = (await conn.query(
+          `SELECT CONSTRAINT_NAME
+           FROM information_schema.KEY_COLUMN_USAGE
+           WHERE TABLE_SCHEMA = DATABASE()
+             AND TABLE_NAME = 'records'
+             AND COLUMN_NAME = 'patient_id'
+             AND REFERENCED_TABLE_NAME IS NOT NULL`,
+        )) as Array<{ CONSTRAINT_NAME: string }>;
+        for (const row of constraints) {
+          const name = String(row.CONSTRAINT_NAME).replace(/`/g, '``');
+          await conn.query(`ALTER TABLE records DROP FOREIGN KEY \`${name}\``);
+        }
+      } catch (e: any) {
+        this.logger.warn(`records.patient_id FK 제거 스킵: ${e?.message ?? e}`);
+      }
+      try {
+        await conn.query(`ALTER TABLE records MODIFY COLUMN patient_id BIGINT NULL COMMENT '레거시 환자 FK'`);
+      } catch (e: any) {
+        if (e?.code !== 'ER_BAD_FIELD_ERROR' && e?.errno !== 1054) {
+          this.logger.warn(`records.patient_id nullable 마이그레이션 스킵: ${e?.message ?? e}`);
+        }
+      }
       await conn.query(
         `ALTER TABLE records
          ADD COLUMN IF NOT EXISTS title VARCHAR(512) NOT NULL DEFAULT '' COMMENT '사용자 지정 기록 제목'`,
       );
+      try {
+        await conn.query(
+          `ALTER TABLE records
+           MODIFY COLUMN creation_source ENUM('manual','voice','ai','ocr','record_based') NOT NULL DEFAULT 'manual'
+           COMMENT '생성 경로: 직접/음성/AI/OCR/기록기반'`,
+        );
+      } catch (e: any) {
+        if (e?.code !== 'ER_BAD_FIELD_ERROR' && e?.errno !== 1054) {
+          this.logger.warn(`records.creation_source 마이그레이션 스킵: ${e?.message ?? e}`);
+        }
+      }
       await conn.query(
         `UPDATE records r
-         INNER JOIN patients p ON p.id = r.patient_id
          SET r.title = CONCAT(
-           REPLACE(REPLACE(IFNULL(p.name, ''), '-', ' '), '_', ' '),
-           '-',
            r.record_type,
            '-',
            DATE_FORMAT(r.record_date, '%Y.%m.%d'),
@@ -71,12 +102,11 @@ export class RecordsService implements OnModuleInit {
         ? `WHERE (
              r.document_number LIKE ?
              OR r.record_type LIKE ?
-             OR p.name LIKE ?
              OR r.title LIKE ?
            )`
         : '';
       const whereArgs = keyword
-        ? [`%${keyword}%`, `%${keyword}%`, `%${keyword}%`, `%${keyword}%`]
+        ? [`%${keyword}%`, `%${keyword}%`, `%${keyword}%`]
         : [];
 
       let total = 0;
@@ -84,7 +114,6 @@ export class RecordsService implements OnModuleInit {
         const [{ total: totalRaw }] = await conn.query(
           `SELECT COUNT(*) AS total
            FROM records r
-           INNER JOIN patients p ON p.id = r.patient_id
            ${whereSql}`,
           whereArgs,
         );
@@ -97,11 +126,9 @@ export class RecordsService implements OnModuleInit {
       }
       try {
         const rows = await conn.query(
-          `SELECT r.id, r.patient_id, r.record_type, r.title, r.document_number,
-                  r.record_date, r.record_time, r.emr_sync_status, r.creation_source,
-                  p.patient_number, p.name, p.birth_date, p.gender, p.room_number
+          `SELECT r.id, r.record_type, r.title, r.document_number,
+                  r.record_date, r.record_time, r.emr_sync_status, r.creation_source
            FROM records r
-           INNER JOIN patients p ON p.id = r.patient_id
            ${whereSql}
            ORDER BY ${orderBy}
            LIMIT ? OFFSET ?`,
@@ -114,11 +141,9 @@ export class RecordsService implements OnModuleInit {
       } catch (e: any) {
         if (e?.code === 'ER_BAD_FIELD_ERROR' || e?.errno === 1054) {
           const rows = await conn.query(
-            `SELECT r.id, r.patient_id, r.record_type, r.document_number,
-                    r.record_date, r.record_time, r.emr_sync_status,
-                    p.patient_number, p.name, p.birth_date, p.gender, p.room_number
+            `SELECT r.id, r.record_type, r.document_number,
+                    r.record_date, r.record_time, r.emr_sync_status
              FROM records r
-             INNER JOIN patients p ON p.id = r.patient_id
              ${whereSql}
              ORDER BY ${orderBy}
              LIMIT ? OFFSET ?`,
@@ -147,11 +172,9 @@ export class RecordsService implements OnModuleInit {
       let rows: any[];
       try {
         rows = await conn.query(
-          `SELECT r.id, r.patient_id, r.record_type, r.title, r.document_number,
-                  r.record_date, r.record_time, r.data, r.creation_source, r.emr_sync_status,
-                  p.patient_number, p.name
+          `SELECT r.id, r.record_type, r.title, r.document_number,
+                  r.record_date, r.record_time, r.data, r.creation_source, r.emr_sync_status
            FROM records r
-           INNER JOIN patients p ON p.id = r.patient_id
            WHERE r.id = ?`,
           [id],
         );
@@ -183,10 +206,9 @@ export class RecordsService implements OnModuleInit {
             : String(rt ?? '').slice(0, 8);
       const titleRaw = row.title != null ? String(row.title).trim() : '';
       const titleResolved =
-        titleRaw !== '' ? titleRaw : this.defaultTitleFromJoinedRow(row);
+        titleRaw !== '' ? titleRaw : this.defaultTitleFromRow(row);
       return {
         id: Number(row.id),
-        patientId: Number(row.patient_id),
         recordType: String(row.record_type),
         title: titleResolved,
         documentNumber: String(row.document_number),
@@ -195,10 +217,6 @@ export class RecordsService implements OnModuleInit {
         data,
         creationSource: source,
         emrSyncStatus: emr,
-        patient: {
-          patientNumber: String(row.patient_number),
-          name: String(row.name),
-        },
       };
     } finally {
       conn.release();
@@ -219,10 +237,9 @@ export class RecordsService implements OnModuleInit {
       try {
         result = await conn.query(
           `INSERT INTO records
-            (patient_id, record_type, document_number, record_date, record_time, title, data, creation_source)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+            (record_type, document_number, record_date, record_time, title, data, creation_source)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`,
           [
-            dto.patientId,
             dto.recordType,
             dto.documentNumber,
             dto.recordDate,
@@ -236,10 +253,9 @@ export class RecordsService implements OnModuleInit {
         if (first?.code === 'ER_BAD_FIELD_ERROR' || first?.errno === 1054) {
           result = await conn.query(
             `INSERT INTO records
-              (patient_id, record_type, document_number, record_date, record_time, data, creation_source)
-             VALUES (?, ?, ?, ?, ?, ?, ?)`,
+              (record_type, document_number, record_date, record_time, data, creation_source)
+             VALUES (?, ?, ?, ?, ?, ?)`,
             [
-              dto.patientId,
               dto.recordType,
               dto.documentNumber,
               dto.recordDate,
@@ -361,11 +377,9 @@ export class RecordsService implements OnModuleInit {
       const lim = Math.min(50, Math.max(1, limit));
       try {
         const rows = await conn.query(
-          `SELECT r.id, r.patient_id, r.record_type, r.title, r.document_number,
-                  r.record_date, r.record_time, r.emr_sync_status, r.created_at,
-                  p.patient_number, p.name, p.birth_date, p.gender, p.room_number
+          `SELECT r.id, r.record_type, r.title, r.document_number,
+                  r.record_date, r.record_time, r.emr_sync_status, r.created_at
            FROM records r
-           INNER JOIN patients p ON p.id = r.patient_id
            ORDER BY r.created_at DESC
            LIMIT ?`,
           [lim],
@@ -374,11 +388,9 @@ export class RecordsService implements OnModuleInit {
       } catch (e: any) {
         if (e?.code === 'ER_BAD_FIELD_ERROR' || e?.errno === 1054) {
           const rows = await conn.query(
-            `SELECT r.id, r.patient_id, r.record_type, r.document_number,
-                    r.record_date, r.record_time, r.created_at,
-                    p.patient_number, p.name, p.birth_date, p.gender, p.room_number
+            `SELECT r.id, r.record_type, r.document_number,
+                    r.record_date, r.record_time, r.created_at
              FROM records r
-             INNER JOIN patients p ON p.id = r.patient_id
              ORDER BY r.created_at DESC
              LIMIT ?`,
             [lim],
@@ -404,11 +416,9 @@ export class RecordsService implements OnModuleInit {
       const lim = Math.min(50, Math.max(1, limit));
       try {
         const rows = await conn.query(
-          `SELECT r.id, r.patient_id, r.record_type, r.title, r.document_number,
-                  r.record_date, r.record_time, r.emr_sync_status, r.updated_at,
-                  p.patient_number, p.name, p.birth_date, p.gender, p.room_number
+          `SELECT r.id, r.record_type, r.title, r.document_number,
+                  r.record_date, r.record_time, r.emr_sync_status, r.updated_at
            FROM records r
-           INNER JOIN patients p ON p.id = r.patient_id
            WHERE r.updated_at > r.created_at
            ORDER BY r.updated_at DESC
            LIMIT ?`,
@@ -418,11 +428,9 @@ export class RecordsService implements OnModuleInit {
       } catch (e: any) {
         if (e?.code === 'ER_BAD_FIELD_ERROR' || e?.errno === 1054) {
           const rows = await conn.query(
-            `SELECT r.id, r.patient_id, r.record_type, r.document_number,
-                    r.record_date, r.record_time, r.updated_at,
-                    p.patient_number, p.name, p.birth_date, p.gender, p.room_number
+            `SELECT r.id, r.record_type, r.document_number,
+                    r.record_date, r.record_time, r.updated_at
              FROM records r
-             INNER JOIN patients p ON p.id = r.patient_id
              WHERE r.updated_at > r.created_at
              ORDER BY r.updated_at DESC
              LIMIT ?`,
@@ -442,15 +450,78 @@ export class RecordsService implements OnModuleInit {
     }
   }
 
-  private defaultTitleFromJoinedRow(row: any): string {
-    const name =
-      String(row.name ?? '')
-        .replace(/-/g, ' ')
-        .replace(/_/g, ' ')
-        .trim() || '—';
+  async getStats() {
+    const conn = await this.pool.getConnection();
+    try {
+      const defaultStats = {
+        totalRecords: 0,
+        todayVoiceRecords: 0,
+        voiceRecordsDodChange: 0,
+        todayRecordBasedRecords: 0,
+        recordBasedRecordsDodChange: 0,
+        todayOcrRecords: 0,
+        ocrRecordsDodChange: 0,
+        pendingEmrRecords: 0,
+        sentEmrRecords: 0,
+      };
+      try {
+        const [{ total }] = await conn.query(`SELECT COUNT(*) AS total FROM records`);
+        const [{ tv }] = await conn.query(
+          `SELECT COUNT(*) AS tv FROM records
+           WHERE creation_source = 'voice' AND DATE(created_at) = CURDATE()`,
+        );
+        const [{ yv }] = await conn.query(
+          `SELECT COUNT(*) AS yv FROM records
+           WHERE creation_source = 'voice' AND DATE(created_at) = DATE_SUB(CURDATE(), INTERVAL 1 DAY)`,
+        );
+        const [{ tr }] = await conn.query(
+          `SELECT COUNT(*) AS tr FROM records
+           WHERE creation_source = 'record_based' AND DATE(created_at) = CURDATE()`,
+        );
+        const [{ yr }] = await conn.query(
+          `SELECT COUNT(*) AS yr FROM records
+           WHERE creation_source = 'record_based' AND DATE(created_at) = DATE_SUB(CURDATE(), INTERVAL 1 DAY)`,
+        );
+        const [{ tocr }] = await conn.query(
+          `SELECT COUNT(*) AS tocr FROM records
+           WHERE creation_source = 'ocr' AND DATE(created_at) = CURDATE()`,
+        );
+        const [{ yocr }] = await conn.query(
+          `SELECT COUNT(*) AS yocr FROM records
+           WHERE creation_source = 'ocr' AND DATE(created_at) = DATE_SUB(CURDATE(), INTERVAL 1 DAY)`,
+        );
+        const [{ pending }] = await conn.query(
+          `SELECT COUNT(*) AS pending FROM records WHERE emr_sync_status <> 'sent' OR emr_sync_status IS NULL`,
+        );
+        const [{ sent }] = await conn.query(
+          `SELECT COUNT(*) AS sent FROM records WHERE emr_sync_status = 'sent'`,
+        );
+        return {
+          totalRecords: Number(total ?? 0),
+          todayVoiceRecords: Number(tv ?? 0),
+          voiceRecordsDodChange: Number(tv ?? 0) - Number(yv ?? 0),
+          todayRecordBasedRecords: Number(tr ?? 0),
+          recordBasedRecordsDodChange: Number(tr ?? 0) - Number(yr ?? 0),
+          todayOcrRecords: Number(tocr ?? 0),
+          ocrRecordsDodChange: Number(tocr ?? 0) - Number(yocr ?? 0),
+          pendingEmrRecords: Number(pending ?? 0),
+          sentEmrRecords: Number(sent ?? 0),
+        };
+      } catch (e: any) {
+        if (e?.code === 'ER_NO_SUCH_TABLE' || e?.errno === 1146) {
+          return defaultStats;
+        }
+        throw e;
+      }
+    } finally {
+      conn.release();
+    }
+  }
+
+  private defaultTitleFromRow(row: any): string {
     const type = String(row.record_type ?? '');
     const dt = this.formatRecordDateTime(row.record_date, row.record_time);
-    return `${name}-${type}-${dt}`;
+    return `${type}-${dt}`;
   }
 
   private mapDashboardRecordRow(row: any) {
@@ -458,10 +529,9 @@ export class RecordsService implements OnModuleInit {
       row.emr_sync_status === 'sent' ? 'sent' : 'pending';
     const titleRaw = row.title != null ? String(row.title).trim() : '';
     const title =
-      titleRaw !== '' ? titleRaw : this.defaultTitleFromJoinedRow(row);
+      titleRaw !== '' ? titleRaw : this.defaultTitleFromRow(row);
     return {
       id: Number(row.id),
-      patientId: Number(row.patient_id),
       recordType: String(row.record_type),
       title,
       documentNumber: String(row.document_number),
@@ -471,20 +541,11 @@ export class RecordsService implements OnModuleInit {
         String(row.record_type),
         Number(row.id),
       ),
-      patient: {
-        id: String(row.patient_id),
-        patientNumber: String(row.patient_number),
-        roomNumber: String(row.room_number ?? ''),
-        name: String(row.name),
-        birthDate: this.formatDateOnly(row.birth_date),
-        gender: String(row.gender),
-        hasRecords: true,
-      },
     };
   }
 
   private normalizeCreationSource(raw: string | null | undefined): string {
-    if (raw === 'voice' || raw === 'ai' || raw === 'ocr') {
+    if (raw === 'voice' || raw === 'ai' || raw === 'ocr' || raw === 'record_based') {
       return raw;
     }
     return 'manual';
@@ -495,10 +556,9 @@ export class RecordsService implements OnModuleInit {
     const source = this.normalizeCreationSource(row.creation_source);
     const titleRaw = row.title != null ? String(row.title).trim() : '';
     const title =
-      titleRaw !== '' ? titleRaw : this.defaultTitleFromJoinedRow(row);
+      titleRaw !== '' ? titleRaw : this.defaultTitleFromRow(row);
     return {
       id: Number(row.id),
-      patientId: Number(row.patient_id),
       recordType: String(row.record_type),
       title,
       documentNumber: String(row.document_number),
@@ -509,15 +569,6 @@ export class RecordsService implements OnModuleInit {
         String(row.record_type),
         Number(row.id),
       ),
-      patient: {
-        id: String(row.patient_id),
-        patientNumber: String(row.patient_number),
-        roomNumber: String(row.room_number ?? ''),
-        name: String(row.name),
-        birthDate: this.formatDateOnly(row.birth_date),
-        gender: String(row.gender),
-        hasRecords: true,
-      },
     };
   }
 
@@ -546,12 +597,6 @@ export class RecordsService implements OnModuleInit {
                 ? 'sbar-'
                 : 'observation-';
     return `${prefix}${id}`;
-  }
-
-  private formatDateOnly(date: Date | string): string {
-    if (!date) return '';
-    const d = new Date(date);
-    return `${d.getFullYear()}.${d.getMonth() + 1}.${d.getDate()}`;
   }
 
   private formatRecordDateTime(

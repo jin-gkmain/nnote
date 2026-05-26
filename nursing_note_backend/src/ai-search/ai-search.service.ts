@@ -38,7 +38,7 @@ export class AiSearchService {
       };
     }
     const queryVector = this.textToVector(
-      `${dto.templateId} ${dto.fieldKey} ${normalizedCurrentText} ${dto.patientContext ?? ''} ${dto.recentRecordContext ?? ''}`,
+      `${dto.templateId} ${dto.fieldKey} ${normalizedCurrentText} ${dto.recentRecordContext ?? ''}`,
     );
     const qdrantResults = await this.queryQdrant(queryVector);
     const best = qdrantResults
@@ -109,15 +109,13 @@ export class AiSearchService {
   private async buildFallbackSuggestion(dto: AutocompleteRequestDto, _userId: number): Promise<string | null> {
     const conn = await this.pool.getConnection();
     try {
-      const hasPatientFilter = dto.patientId != null;
       const rows = (await conn.query(
         `SELECT data
          FROM records
          WHERE record_type = ?
-           AND (? IS NULL OR patient_id = ?)
          ORDER BY id DESC
          LIMIT 30`,
-        [dto.templateId, hasPatientFilter ? dto.patientId : null, hasPatientFilter ? dto.patientId : null],
+        [dto.templateId],
       )) as { data: string }[];
       const values: string[] = [];
       for (const row of rows) {
