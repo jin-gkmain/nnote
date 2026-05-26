@@ -1,2 +1,6 @@
 .cursor
 docs
+
+.DS_Store
+
+*.xlsx
