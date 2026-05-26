@@ -23,8 +23,11 @@ import { InputAssistField } from "@/app/components/input-assist-field";
 import { TemplateFieldControl } from "@/app/components/template-field-control";
 import {
   isChoiceTemplateValueType,
+  normalizeTemplateFieldOptions,
+  optionsObjectFromOptionDetails,
   splitTemplateLabel,
   type TemplateFieldEffective,
+  type TemplateFieldOption,
   type TemplateInputKind,
   type TemplateUiFieldConfig,
 } from "@/app/data/template-field-registry";
@@ -62,6 +65,12 @@ function effectiveToConfig(rows: TemplateFieldEffective[]): TemplateUiFieldConfi
     unit: r.unit,
     fullRow: r.fullRow,
     ...(r.options !== undefined ? { options: { ...r.options } } : {}),
+    ...(r.optionDetails !== undefined ? { optionDetails: [...r.optionDetails] } : {}),
+    ...(r.conditions !== undefined ? { conditions: [...r.conditions] } : {}),
+    ...(r.aiHint !== undefined ? { aiHint: r.aiHint } : {}),
+    ...(r.inputSources !== undefined ? { inputSources: [...r.inputSources] } : {}),
+    ...(r.sourceRow !== undefined ? { sourceRow: r.sourceRow } : {}),
+    ...(r.sourceDefinition !== undefined ? { sourceDefinition: r.sourceDefinition } : {}),
   }));
 }
 
@@ -74,10 +83,10 @@ function buildPreviewRowGroups(visibleFields: TemplateUiFieldConfig[]): Template
       field.inputKind === "text_short" ||
       field.inputKind === "number" ||
       field.inputKind === "date" ||
+      field.inputKind === "datetime" ||
       field.inputKind === "boolean" ||
-      field.inputKind === "radio" ||
-      field.inputKind === "checkbox" ||
-      field.inputKind === "selectbox";
+      field.inputKind === "single_select" ||
+      field.inputKind === "multi_select";
     const forceFullRow = isShort && Boolean(field.fullRow);
     if (!isShort || forceFullRow) {
       if (shortBuffer.length) {
@@ -164,6 +173,24 @@ interface SortableTemplateFieldRowProps {
   updateField: (index: number, patch: Partial<TemplateUiFieldConfig>) => void;
 }
 
+function optionRowsForField(field: TemplateUiFieldConfig): TemplateFieldOption[] {
+  const normalized = normalizeTemplateFieldOptions(field.optionDetails, field.options);
+  return normalized.length > 0
+    ? normalized
+    : [{ optionKey: "옵션1", label: "옵션1", allowFreeText: false, displayOrder: 1 }];
+}
+
+function optionPatch(options: TemplateFieldOption[]): Partial<TemplateUiFieldConfig> {
+  const next = options.map((option, index) => ({
+    ...option,
+    displayOrder: index + 1,
+  }));
+  return {
+    optionDetails: next,
+    options: optionsObjectFromOptionDetails(next),
+  };
+}
+
 function SortableTemplateFieldRow({
   field,
   index,
@@ -175,6 +202,13 @@ function SortableTemplateFieldRow({
     id: field.storageKey,
     disabled: !isAdmin || readOnlySettings,
   });
+  const { field: fieldTitle } = splitTemplateLabel(field.label);
+  const options = optionRowsForField(field);
+  const decisionGuideValue = field.aiHint ?? "";
+  const decisionGuidePlaceholder =
+    field.sourceDefinition?.trim() ||
+    field.description?.trim() ||
+    "예: 원문에서 통증 위치가 명시된 경우에만 채우고, 근거가 없으면 비워둡니다.";
 
   return (
     <div
@@ -199,12 +233,9 @@ function SortableTemplateFieldRow({
           <span className="hidden w-5 lg:block" aria-hidden />
         )}
         <div className="min-w-0">
-          <div className="mb-1 flex items-center gap-2">
-            <span className="text-xs font-mono text-gray-400">{field.storageKey}</span>
-          </div>
           <input
             type="text"
-            value={field.label}
+            value={fieldTitle}
             readOnly
             title="대주제·소주제 이름은 관리자 템플릿(JSON)에서만 변경할 수 있습니다."
             className="h-9 w-full cursor-not-allowed rounded-md border border-gray-200 bg-gray-100 px-2 py-1.5 text-sm font-medium text-gray-800"
@@ -217,11 +248,10 @@ function SortableTemplateFieldRow({
             onChange={(e) => {
               const next = e.target.value as TemplateInputKind;
               if (isChoiceTemplateValueType(next)) {
-                const keep =
-                  field.options && Object.keys(field.options).length > 0 ? field.options : { 옵션1: "" };
-                updateField(index, { inputKind: next, options: { ...keep } });
+                const nextOptions = optionRowsForField(field);
+                updateField(index, { inputKind: next, ...optionPatch(nextOptions) });
               } else {
-                updateField(index, { inputKind: next, options: undefined });
+                updateField(index, { inputKind: next, options: undefined, optionDetails: undefined });
               }
             }}
             className="h-9 rounded-md border border-gray-200 bg-white px-2 text-sm disabled:cursor-not-allowed disabled:bg-gray-100"
@@ -230,10 +260,13 @@ function SortableTemplateFieldRow({
             <option value="text_short">짧은 텍스트 (한 줄)</option>
             <option value="number">숫자</option>
             <option value="date">날짜</option>
+            <option value="datetime">날짜+시간</option>
             <option value="boolean">예/아니오/공백</option>
-            <option value="radio">라디오</option>
-            <option value="checkbox">체크박스(다중)</option>
-            <option value="selectbox">선택 상자</option>
+            <option value="single_select">단일 선택</option>
+            <option value="multi_select">다중 선택</option>
+            <option value="computed">자동 계산</option>
+            <option value="image">이미지</option>
+            <option value="section_note">안내문</option>
           </select>
           <input
             type="text"
@@ -247,10 +280,10 @@ function SortableTemplateFieldRow({
             {(field.inputKind === "text_short" ||
               field.inputKind === "number" ||
               field.inputKind === "date" ||
+              field.inputKind === "datetime" ||
               field.inputKind === "boolean" ||
-              field.inputKind === "radio" ||
-              field.inputKind === "checkbox" ||
-              field.inputKind === "selectbox") ? (
+              field.inputKind === "single_select" ||
+              field.inputKind === "multi_select") ? (
               <label className={`flex items-center gap-1.5 ${readOnlySettings ? "cursor-not-allowed opacity-60" : ""}`}>
                 <input
                   type="checkbox"
@@ -274,15 +307,101 @@ function SortableTemplateFieldRow({
         </>
       </div>
       {isChoiceTemplateValueType(field.inputKind) ? (
-        <div className="mt-2 rounded-md border border-gray-200 bg-white px-2 py-2">
-          <p className="mb-1 text-xs text-gray-500">
-            options JSON은 관리자 템플릿 화면에서 편집하는 것을 권장합니다. 현재 값:
-          </p>
-          <pre className="max-h-28 overflow-auto whitespace-pre-wrap break-all font-mono text-[11px] text-gray-800">
-            {JSON.stringify(field.options ?? {}, null, 2)}
-          </pre>
+        <div className="mt-3 rounded-md border border-gray-200 bg-white p-3">
+          <div className="mb-2 flex items-center justify-between gap-2">
+            <p className="text-xs font-semibold text-gray-700">선택지</p>
+            <button
+              type="button"
+              disabled={readOnlySettings}
+              onClick={() =>
+                updateField(index, {
+                  ...optionPatch([
+                    ...options,
+                    {
+                      optionKey: `옵션${options.length + 1}`,
+                      label: `옵션${options.length + 1}`,
+                      allowFreeText: false,
+                      displayOrder: options.length + 1,
+                    },
+                  ]),
+                })
+              }
+              className="rounded-md border border-blue-200 bg-blue-50 px-2 py-1 text-xs font-medium text-blue-700 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              + 선택지 추가
+            </button>
+          </div>
+          <div className="space-y-2">
+            {options.map((option, optionIndex) => (
+              <div key={`${option.displayOrder}-${option.optionKey}`} className="grid grid-cols-1 gap-2 rounded-md bg-gray-50 p-2 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto_auto] lg:items-center">
+                <label className="block text-xs text-gray-600">
+                  선택값
+                  <input
+                    type="text"
+                    value={option.optionKey}
+                    disabled={readOnlySettings}
+                    onChange={(event) => {
+                      const next = [...options];
+                      next[optionIndex] = {
+                        ...option,
+                        optionKey: event.target.value,
+                        label: option.label === option.optionKey ? event.target.value : option.label,
+                      };
+                      updateField(index, optionPatch(next));
+                    }}
+                    className="mt-1 h-8 w-full rounded-md border border-gray-200 bg-white px-2 text-xs disabled:cursor-not-allowed disabled:bg-gray-100"
+                  />
+                </label>
+                <label className="block text-xs text-gray-600">
+                  표시 라벨
+                  <input
+                    type="text"
+                    value={option.label}
+                    disabled={readOnlySettings}
+                    onChange={(event) => {
+                      const next = [...options];
+                      next[optionIndex] = { ...option, label: event.target.value };
+                      updateField(index, optionPatch(next));
+                    }}
+                    className="mt-1 h-8 w-full rounded-md border border-gray-200 bg-white px-2 text-xs disabled:cursor-not-allowed disabled:bg-gray-100"
+                  />
+                </label>
+                <label className="inline-flex items-center gap-1.5 text-xs text-gray-600">
+                  <input
+                    type="checkbox"
+                    checked={option.allowFreeText}
+                    disabled={readOnlySettings}
+                    onChange={(event) => {
+                      const next = [...options];
+                      next[optionIndex] = { ...option, allowFreeText: event.target.checked };
+                      updateField(index, optionPatch(next));
+                    }}
+                  />
+                  자유서술 허용
+                </label>
+                <button
+                  type="button"
+                  disabled={readOnlySettings || options.length <= 1}
+                  onClick={() => updateField(index, optionPatch(options.filter((_, i) => i !== optionIndex)))}
+                  className="rounded-md border border-red-200 bg-white px-2 py-1 text-xs font-medium text-red-700 disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  삭제
+                </button>
+              </div>
+            ))}
+          </div>
         </div>
       ) : null}
+      <label className="mt-3 block text-xs font-medium text-gray-700">
+        AI 판단 기준
+        <textarea
+          value={decisionGuideValue}
+          disabled={readOnlySettings}
+          onChange={(event) => updateField(index, { aiHint: event.target.value })}
+          placeholder={decisionGuidePlaceholder}
+          className="mt-1 min-h-[68px] w-full resize-y rounded-md border border-gray-200 bg-white px-2 py-2 text-xs leading-relaxed text-gray-800 disabled:cursor-not-allowed disabled:bg-gray-100"
+        />
+      </label>
     </div>
   );
 }
@@ -307,12 +426,14 @@ function TemplatePreviewCanvas({
   const sectionBlocks = useMemo(() => buildSectionBlocks(fields), [fields]);
 
   return (
-    <div className="rounded-xl border border-gray-200 bg-white p-4">
-      <p className="text-sm font-semibold text-gray-800">{templateId} 미리보기</p>
-      <p className="mt-1 text-xs text-gray-500">
-        대주제별로 묶어 실제 입력 화면과 비슷하게 보여줍니다. 이름은 변경할 수 없습니다.
-      </p>
-      <div className="mt-4 space-y-4">
+    <div className="flex h-full min-h-0 flex-col rounded-xl border border-gray-200 bg-white p-4">
+      <div className="shrink-0">
+        <p className="text-sm font-semibold text-gray-800">{templateId} 미리보기</p>
+        <p className="mt-1 text-xs text-gray-500">
+          대주제별로 묶어 실제 입력 화면과 비슷하게 보여줍니다. 이름은 변경할 수 없습니다.
+        </p>
+      </div>
+      <div className="mt-4 min-h-0 flex-1 space-y-4 overflow-y-auto overscroll-contain pr-1">
         {sectionBlocks.length === 0 ? (
           <div className="rounded-lg border border-dashed border-gray-300 bg-gray-50 p-6 text-center text-sm text-gray-500">
             표시되는 항목이 없습니다.
@@ -345,7 +466,11 @@ function TemplatePreviewCanvas({
                           fullRow: field.fullRow,
                           hidden: field.hidden,
                           ...(field.options !== undefined ? { options: { ...field.options } } : {}),
+                          ...(field.optionDetails !== undefined ? { optionDetails: [...field.optionDetails] } : {}),
+                          ...(field.aiHint !== undefined ? { aiHint: field.aiHint } : {}),
+                          ...(field.sourceDefinition !== undefined ? { sourceDefinition: field.sourceDefinition } : {}),
                         };
+                        const guide = field.aiHint?.trim() || field.sourceDefinition?.trim() || "";
                         return (
                           <div
                             key={field.storageKey}
@@ -364,6 +489,11 @@ function TemplatePreviewCanvas({
                               classNameInputShort="h-10 w-full rounded-md border border-gray-200 bg-white px-3 text-sm"
                               classNameTextarea="min-h-[88px] w-full resize-none rounded-md border border-gray-200 bg-white px-3 py-2 text-sm"
                             />
+                            {guide ? (
+                              <p className="mt-2 rounded-md bg-blue-50 px-2 py-1.5 text-[11px] leading-relaxed text-blue-800">
+                                판단 기준: {guide}
+                              </p>
+                            ) : null}
                           </div>
                         );
                       })}
@@ -403,7 +533,7 @@ export default function SettingsPage() {
       <h1 className="text-[28px] font-bold leading-tight text-[#111827] sm:text-3xl">
         내정보
       </h1>
-      <Tabs defaultValue="template" className="w-full gap-4">
+      <Tabs defaultValue="template" className="min-h-0 w-full flex-1 gap-4 overflow-hidden">
         <TabsList className="h-auto w-full justify-start gap-1 overflow-x-auto rounded-xl border border-[#E5E7EB] bg-[#F3F4F6] p-1 sm:w-auto">
           <TabsTrigger
             value="template"
@@ -424,13 +554,13 @@ export default function SettingsPage() {
             내 계정
           </TabsTrigger>
         </TabsList>
-        <TabsContent value="template" className="mt-0">
+        <TabsContent value="template" className="mt-0 min-h-0 overflow-hidden">
           <TemplateSettingsSection user={user} token={token} />
         </TabsContent>
-        <TabsContent value="input-assist" className="mt-0">
+        <TabsContent value="input-assist" className="mt-0 min-h-0 overflow-y-auto overscroll-contain">
           <InputAssistSettingsSection token={token} />
         </TabsContent>
-        <TabsContent value="account" className="mt-0">
+        <TabsContent value="account" className="mt-0 min-h-0 overflow-y-auto overscroll-contain">
           <AccountSettingsSection user={user} token={token} onProfileSaved={() => void refreshMe()} />
         </TabsContent>
       </Tabs>
@@ -756,8 +886,8 @@ export function TemplateSettingsSection({
   );
 
   return (
-    <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm sm:p-6">
-      <div className="mb-4 flex flex-wrap items-end justify-between gap-3">
+    <div className="flex h-full min-h-0 flex-col overflow-hidden rounded-xl border border-gray-200 bg-white p-4 shadow-sm sm:p-6">
+      <div className="mb-4 shrink-0 flex flex-wrap items-end justify-between gap-3">
         <div>
           <p className="text-sm font-medium text-gray-800">기록지 템플릿</p>
           <p className="mt-0.5 text-xs text-gray-500">
@@ -788,7 +918,7 @@ export function TemplateSettingsSection({
         value={templateId}
         disabled={dirty}
         onChange={(e) => setTemplateId(e.target.value as VoiceRecordTemplateId)}
-        className="mb-6 h-10 w-full max-w-md rounded-lg border border-gray-300 bg-white px-3 text-sm disabled:opacity-50"
+        className="mb-4 h-10 w-full max-w-md shrink-0 rounded-lg border border-gray-300 bg-white px-3 text-sm disabled:opacity-50"
       >
         {templateOptions.map((t) => (
           <option key={t} value={t}>
@@ -797,21 +927,26 @@ export function TemplateSettingsSection({
         ))}
       </select>
       {templateLocked ? (
-        <p className="mb-4 text-xs text-gray-600">
+        <p className="mb-3 shrink-0 text-xs text-gray-600">
           SOAP·SOAPIE·SBAR는 시스템 기본 양식입니다. 목록에는 표시되며 기록 작성에 사용할 수 있으나, 필드 설정 변경은 할 수 없습니다.
         </p>
       ) : null}
       {dirty ? (
-        <p className="mb-4 text-xs text-amber-700">
+        <p className="mb-3 shrink-0 text-xs text-amber-700">
           변경 중입니다. 다른 템플릿으로 바꾸려면 먼저 저장하거나 취소하세요.
+        </p>
+      ) : null}
+      {message ? (
+        <p className="mb-3 shrink-0 text-sm text-gray-700" role="status">
+          {message}
         </p>
       ) : null}
 
       {loading ? (
         <p className="text-sm text-gray-500">불러오는 중…</p>
       ) : (
-        <div className="grid grid-cols-1 gap-6 xl:grid-cols-10">
-          <div className="min-h-0 space-y-4 xl:col-span-7">
+        <div className="grid min-h-0 flex-1 grid-cols-1 gap-4 overflow-hidden xl:grid-cols-10 xl:gap-6">
+          <div className="min-h-0 space-y-4 overflow-y-auto overscroll-contain pr-1 xl:col-span-6">
             <DndContext
               sensors={sensors}
               collisionDetection={closestCenter}
@@ -848,25 +983,19 @@ export function TemplateSettingsSection({
                 {activeDragField ? (
                   <div className="min-w-[220px] rounded-lg border border-blue-300 bg-white p-3 shadow-2xl">
                     <p className="text-xs text-blue-600">항목 이동</p>
-                    <p className="truncate text-sm font-semibold text-gray-900">{activeDragField.label}</p>
-                    <p className="mt-1 text-xs text-gray-500">{activeDragField.storageKey}</p>
+                    <p className="truncate text-sm font-semibold text-gray-900">
+                      {splitTemplateLabel(activeDragField.label).field}
+                    </p>
                   </div>
                 ) : null}
               </DragOverlay>
             </DndContext>
           </div>
-          <div className="xl:col-span-3">
-            <div className="sticky top-4 space-y-3">
-              <TemplatePreviewCanvas templateId={templateId} fields={draftFields} />
-            </div>
+          <div className="min-h-0 overflow-hidden xl:col-span-4">
+            <TemplatePreviewCanvas templateId={templateId} fields={draftFields} />
           </div>
         </div>
       )}
-      {message ? (
-        <p className="mt-4 text-sm text-gray-700" role="status">
-          {message}
-        </p>
-      ) : null}
     </div>
   );
 }

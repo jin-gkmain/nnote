@@ -1,7 +1,7 @@
 const STORAGE_KEY = "nursing-preferred-stt-engine";
 
-/** STT는 WhisperX만 사용합니다. */
-export type SttEngineChoice = "whisperx";
+/** STT provider는 백엔드의 STT_PROVIDER 설정을 따릅니다. */
+export type SttEngineChoice = "clova-speech";
 
 export function getPreferredSttEngine(): SttEngineChoice {
   try {
@@ -10,5 +10,5 @@ export function getPreferredSttEngine(): SttEngineChoice {
   } catch {
     /* ignore */
   }
-  return "whisperx";
+  return "clova-speech";
 }

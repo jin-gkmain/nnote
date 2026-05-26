@@ -63,11 +63,20 @@ export function buildRecordPayload(
     (key) => key && key !== "recordDate" && key !== "recordTime" && key !== "date" && key !== "time",
   );
   if (dynamicFieldKeys.length > 0) {
-    const dynamicData: Record<string, unknown> = {};
+    const fields: Record<string, unknown> = {};
     for (const key of dynamicFieldKeys) {
-      setNestedValue(dynamicData, key, content[key] ?? "");
+      setNestedValue(fields, key, content[key] ?? "");
     }
-    return { documentNumber, recordDate, recordTime, data: dynamicData };
+    return {
+      documentNumber,
+      recordDate,
+      recordTime,
+      data: {
+        schemaVersion: 2,
+        templateVersion: Number(content.__templateVersion ?? 2),
+        fields,
+      },
+    };
   }
 
   let data: Record<string, unknown>;

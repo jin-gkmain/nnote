@@ -2,7 +2,7 @@
 # 간호기록 서비스 - Docker Compose (통합)
 #
 # 구조: Nginx(프론트엔드) → NestJS(백엔드) → MariaDB
-# Apache2가 port 3000으로 포워딩 → Nginx 컨테이너가 수신
+# 호스트 포트(기본 3002) → Nginx 컨테이너가 수신
 #
 # 사용법 (하이픈 없는 Docker Compose v2 플러그인 권장):
 #   docker compose up -d --build
@@ -65,15 +65,13 @@ services:
       # (localhost가 아니라 "db" 컨테이너로 연결)
       DB_HOST: db
       DB_PORT: 3306
-      PY_STT_API_URL: http://stt:8000/v1/transcribe
     depends_on:
       db:
         condition: service_healthy
-      stt:
-        condition: service_healthy
 
-  # --- 3. WhisperX + pyannote STT 서비스 ---
+  # --- 3. WhisperX + pyannote STT 서비스 (필요 시 `--profile local-stt`) ---
   stt:
+    profiles: ["local-stt"]
     build: ./nursing_note_stt_service
     container_name: nursing-note-stt
     restart: unless-stopped
@@ -107,8 +105,8 @@ services:
     container_name: nursing-note-frontend
     restart: unless-stopped
     ports:
-      # Apache2가 포워딩하는 포트 3000 → Nginx 컨테이너의 80
-      - "3000:80"
+      # 호스트 포트(기본 3002) → Nginx 컨테이너의 80
+      - "${FRONTEND_PORT:-3002}:80"
     depends_on:
       - backend
       - live-stt

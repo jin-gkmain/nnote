@@ -151,23 +151,33 @@ export class AiDraftService {
     const fieldLines = fields.map((f) => {
       const desc = f.description ? ` — ${f.description}` : '';
       const vt = f.valueType ? ` [valueType=${f.valueType}]` : '';
+      const sources =
+        f.inputSources && f.inputSources.length > 0
+          ? ` — inputSources: ${f.inputSources.join(', ')}`
+          : '';
+      const decisionGuide =
+        f.aiHint || f.sourceDefinition
+          ? ` — 판단 기준: ${f.aiHint || f.sourceDefinition}`
+          : '';
       const keys =
         f.optionKeys && f.optionKeys.length > 0
           ? ` — allowedKeys: ${f.optionKeys.map((k) => `"${k}"`).join(', ')}`
           : '';
-      return `  "${f.key}": ""  // ${f.label}${desc}${vt}${keys}`;
+      return `  "${f.key}": ""  // ${f.label}${desc}${vt}${sources}${keys}${decisionGuide}`;
     });
     const hasChoiceFields = fields.some(
       (f) =>
-        (f.valueType === 'radio' || f.valueType === 'selectbox' || f.valueType === 'checkbox') &&
+        (f.valueType === 'single_select' || f.valueType === 'multi_select') &&
         f.optionKeys &&
         f.optionKeys.length > 0,
     );
     const choiceRules = hasChoiceFields
       ? `
 선택형 필드 규칙(valueType·allowedKeys가 붙은 항목):
-- radio / selectbox: 값은 반드시 allowedKeys 중 **정확히 하나**와 동일한 문자열이거나, 정보가 없으면 빈 문자열("")입니다.
-- checkbox: 값은 allowedKeys에 있는 키들만 쉼표(,)로 연결한 문자열이거나 빈 문자열("")입니다. (예: "키A,키B"). 순서는 자유이나 키는 allowedKeys만 사용합니다.
+- single_select: 값은 반드시 allowedKeys 중 **정확히 하나**와 동일한 문자열이거나, 정보가 없으면 빈 문자열("")입니다.
+- multi_select: 값은 allowedKeys에 있는 키들만 쉼표(,)로 연결한 문자열이거나 빈 문자열("")입니다. (예: "키A,키B"). 순서는 자유이나 키는 allowedKeys만 사용합니다.
+- allowedKeys에 없는 표현은 임의로 새 선택지를 만들지 말고, 명확히 대응되지 않으면 빈 문자열("")로 둡니다.
+- inputSources에 STT가 없는 필드는 STT 원문만으로는 채우지 말고, 원문에 명시 근거가 있을 때만 채웁니다.
 `
       : '';
     const hintLines = (structuredHints ?? [])
@@ -180,6 +190,7 @@ export class AiDraftService {
     const systemPrompt = `당신은 간호 기록 작성 보조 전문가입니다.
 아래 원문 텍스트만 근거로 각 필드를 채웁니다. 원문에 없는 정보는 추측하지 말고 반드시 빈 문자열("")로 둡니다.
 이 요청은 "신규 생성(환자 기본정보+메모)" 또는 "기록 기반 생성(이전 기록 텍스트)" 중 하나일 수 있으며, 전달된 원문 밖의 사실은 만들지 않습니다.
+각 필드 주석의 "판단 기준"은 해당 필드를 채워도 되는 근거와 해석 기준입니다. 판단 기준과 원문 근거가 맞지 않으면 값을 만들지 말고 빈 문자열("")로 둡니다.
 ${choiceRules}
 반드시 아래 키만 가진 JSON 객체 하나만 출력하세요 (키 이름과 순서는 유지):
 {
@@ -272,12 +283,12 @@ ${hintGuide}
       .map((k) => String(k).trim())
       .filter((k) => k.length > 0);
     const allowed = new Set(keys);
-    if (vt === 'checkbox' && keys.length > 0) {
+    if (vt === 'multi_select' && keys.length > 0) {
       const parts = text.split(',').map((p) => p.trim()).filter((p) => p.length > 0);
       const kept = parts.filter((p) => allowed.has(p));
       return [...new Set(kept)].sort().join(',');
     }
-    if ((vt === 'radio' || vt === 'selectbox') && keys.length > 0) {
+    if (vt === 'single_select' && keys.length > 0) {
       return allowed.has(text) ? text : '';
     }
     const lowerLabel = `${field.key} ${field.label}`.toLowerCase();
