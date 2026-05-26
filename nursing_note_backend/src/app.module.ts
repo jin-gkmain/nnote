@@ -9,6 +9,7 @@ import { OcrModule } from './ocr/ocr.module';
 import { AiDraftModule } from './ai-draft/ai-draft.module';
 import { SttModule } from './stt/stt.module';
 import { TemplateUiModule } from './template-ui/template-ui.module';
+import { TemplatesModule } from './templates/templates.module';
 import { UsersModule } from './users/users.module';
 import { AbbreviationsModule } from './settings/abbreviations.module';
 import { AiSearchModule } from './ai-search/ai-search.module';
@@ -22,6 +23,7 @@ import { AiSearchModule } from './ai-search/ai-search.module';
     DatabaseModule,
     UsersModule,
     AuthModule,
+    TemplatesModule,
     TemplateUiModule,
     AbbreviationsModule,
     PatientsModule,

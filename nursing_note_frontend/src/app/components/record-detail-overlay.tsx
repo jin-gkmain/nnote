@@ -4,13 +4,16 @@ import { ArrowLeft, Pencil } from "lucide-react";
 import { useAuth } from "@/app/auth/auth-context";
 import { ClinicalObservationForm } from "@/app/components/clinical-observation-form";
 import { InputAssistField } from "@/app/components/input-assist-field";
+import { TemplateFieldControl } from "@/app/components/template-field-control";
 import { VoiceTranscriptBlocks } from "@/app/components/voice-transcript-blocks";
 import {
   type RecordDetailResponse,
 } from "@/app/data/nursingRecords";
+import { splitTemplateLabel } from "@/app/data/template-field-registry";
 import { queryKeys } from "@/app/query/query-keys";
 import {
   useRecordDetailQuery,
+  useMergedTemplateFieldsQuery,
   useUpdateRecordEmrStatusMutation,
   useUpdateRecordMutation,
 } from "@/app/query/use-app-query";
@@ -35,6 +38,26 @@ function formatDetailDateTime(recordDate: string, recordTime: string): string {
 
 function deepCloneData(data: Record<string, unknown>): Record<string, unknown> {
   return JSON.parse(JSON.stringify(data)) as Record<string, unknown>;
+}
+
+function isV2RecordData(data: Record<string, unknown>): boolean {
+  return Number(data.schemaVersion ?? 0) === 2 && data.fields != null;
+}
+
+function extractEditableFields(data: Record<string, unknown>): Record<string, unknown> {
+  if (!isV2RecordData(data)) return data;
+  const fields = data.fields;
+  return fields && typeof fields === "object" && !Array.isArray(fields)
+    ? deepCloneData(fields as Record<string, unknown>)
+    : {};
+}
+
+function withEditedFields(
+  original: Record<string, unknown>,
+  fields: Record<string, unknown>,
+): Record<string, unknown> {
+  if (!isV2RecordData(original)) return fields;
+  return { ...original, fields: { ...fields } };
 }
 
 /** 기반 내용을 보여줄 만한 데이터가 있을 때만 우측 패널 표시 */
@@ -260,6 +283,7 @@ function RecordMainBody({
   detail,
   readOnly,
   editData,
+  templateFields,
   onFieldChange,
   observationJson,
   onObservationJson,
@@ -268,11 +292,49 @@ function RecordMainBody({
   detail: RecordDetailResponse;
   readOnly: boolean;
   editData: Record<string, unknown>;
+  templateFields: ReturnType<typeof useMergedTemplateFieldsQuery>["data"];
   onFieldChange: (key: string, value: string) => void;
   observationJson: string;
   onObservationJson: (v: string) => void;
   onClinicalObservationPatch: (path: string[], value: string) => void;
 }) {
+  if (isV2RecordData(detail.data)) {
+    const fields = templateFields?.filter((field) => !field.hidden) ?? [];
+    if (fields.length > 0) {
+      return (
+        <div className="space-y-5">
+          {fields.map((field) => {
+            const { section, field: fieldLabel } = field.label.includes(" · ")
+              ? splitTemplateLabel(field.label)
+              : { section: "", field: field.label };
+            return (
+              <div key={field.storageKey} className="rounded-lg border border-gray-100 bg-gray-50/60 p-3">
+                {section ? (
+                  <p className="mb-1 text-[11px] font-semibold text-gray-500">{section}</p>
+                ) : null}
+                <label className="mb-1.5 block text-xs font-medium text-gray-700">
+                  {fieldLabel}
+                </label>
+                <TemplateFieldControl
+                  field={field}
+                  templateId={detail.recordType}
+                  patientId={detail.patientId}
+                  readOnly={readOnly}
+                  value={String(editData[field.storageKey] ?? "")}
+                  onChange={(next) => onFieldChange(field.storageKey, next)}
+                />
+                {field.sourceDefinition ? (
+                  <p className="mt-1.5 text-[11px] leading-relaxed text-gray-500">
+                    {field.sourceDefinition}
+                  </p>
+                ) : null}
+              </div>
+            );
+          })}
+        </div>
+      );
+    }
+  }
   const rt = detail.recordType;
   if (rt === "간호기록지" || rt === "SOAP" || rt === "SOAPIE") {
     return (
@@ -326,6 +388,7 @@ export function RecordDetailOverlay({
   const updateRecordMutation = useUpdateRecordMutation();
   const updateEmrStatusMutation = useUpdateRecordEmrStatusMutation(token);
   const [detail, setDetail] = useState<RecordDetailResponse | null>(null);
+  const templateFieldsQuery = useMergedTemplateFieldsQuery(detail?.recordType ?? "");
   const [loadError, setLoadError] = useState("");
   const [isEditing, setIsEditing] = useState(false);
   const [editData, setEditData] = useState<Record<string, unknown>>({});
@@ -354,8 +417,8 @@ export function RecordDetailOverlay({
     const d = recordDetailQuery.data;
     setLoadError("");
     setDetail(d);
-    setEditData(deepCloneData(d.data));
-    setObservationJson(JSON.stringify(d.data, null, 2));
+    setEditData(extractEditableFields(d.data));
+    setObservationJson(JSON.stringify(extractEditableFields(d.data), null, 2));
     setDocNumber(d.documentNumber);
     setRecordDate(d.recordDate);
     setRecordTime(d.recordTime.slice(0, 5));
@@ -365,8 +428,8 @@ export function RecordDetailOverlay({
 
   const resetEditFromDetail = useCallback(() => {
     if (!detail) return;
-    setEditData(deepCloneData(detail.data));
-    setObservationJson(JSON.stringify(detail.data, null, 2));
+    setEditData(extractEditableFields(detail.data));
+    setObservationJson(JSON.stringify(extractEditableFields(detail.data), null, 2));
     setDocNumber(detail.documentNumber);
     setRecordDate(detail.recordDate);
     setRecordTime(detail.recordTime.slice(0, 5));
@@ -399,7 +462,7 @@ export function RecordDetailOverlay({
     if (!detail) return;
     setSaveError("");
       try {
-      let dataPayload = editData;
+      let dataPayload = withEditedFields(detail.data, editData);
       const isStructuredForm =
         detail.recordType === "간호기록지" ||
         detail.recordType === "간호인계기록지" ||
@@ -409,7 +472,7 @@ export function RecordDetailOverlay({
         detail.recordType === "SBAR";
       if (!isStructuredForm) {
         try {
-          dataPayload = JSON.parse(observationJson) as Record<string, unknown>;
+        dataPayload = JSON.parse(observationJson) as Record<string, unknown>;
         } catch {
           setSaveError("JSON 형식이 올바르지 않습니다.");
           return;
@@ -633,6 +696,7 @@ export function RecordDetailOverlay({
                   detail={detail}
                   readOnly={!isEditing}
                   editData={editData}
+                  templateFields={templateFieldsQuery.data}
                   onFieldChange={handleFieldChange}
                   observationJson={observationJson}
                   onObservationJson={setObservationJson}

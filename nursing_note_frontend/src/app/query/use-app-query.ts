@@ -198,6 +198,7 @@ export function useMergedTemplateFieldsQuery(templateId: VoiceRecordTemplateId) 
       const map = mapQuery.data ?? (await fetchTemplateUiConfigMap());
       return mergeTemplateFieldOverrides(templateId, map[templateId]?.sections ?? null);
     },
+    enabled: Boolean(templateId),
   });
 }
 

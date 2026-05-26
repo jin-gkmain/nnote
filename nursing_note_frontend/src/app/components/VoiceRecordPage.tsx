@@ -847,7 +847,7 @@ export default function VoiceRecordPage({
   }, [blockingOverlay]);
 
   return (
-    <div className="relative flex min-h-[calc(100dvh-7.5rem)] w-full flex-col text-left">
+    <div className="relative flex min-h-full w-full flex-col text-left">
       {blockingOverlay ? (
         <div
           className="pointer-events-auto fixed inset-0 z-[200] flex items-end justify-center pb-[14vh] sm:pb-[18vh]"

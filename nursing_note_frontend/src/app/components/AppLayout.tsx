@@ -40,7 +40,7 @@ export default function AppLayout() {
       )}
 
       <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-white">
-        <header className="flex min-h-[52px] shrink-0 items-center bg-white px-4 pt-[max(0px,env(safe-area-inset-top))] pb-2 md:h-[60px] md:px-6 md:py-0 md:pt-0 my-4">
+        <header className="flex min-h-[52px] shrink-0 items-center bg-white px-4 pt-[max(0px,env(safe-area-inset-top))] pb-2 md:h-[60px] md:px-6 md:py-0 md:pt-0">
           <div className="flex w-10 shrink-0 justify-start lg:hidden">
             {!sidebarOpen ? (
               <button
