@@ -14,7 +14,8 @@ pip install -r requirements.txt
 ## 2) 환경 변수
 
 - `HF_TOKEN`: pyannote diarization 모델 접근 토큰 (WhisperX 화자 분리용)
-- `WHISPERX_MODEL`: WhisperX / faster-whisper 모델명 (기본값: `large-v3`, 한국어 등 다국어). `distil-large-v3` 는 Hugging Face 기준 **영어** 증류 모델이라 한국어 음성이 영어로 잘못 전사될 수 있습니다.
+- `WHISPERX_MODEL`: WhisperX / faster-whisper 모델명 (Docker CPU 기본값: `base`). 더 높은 정확도가 필요하고 메모리가 충분하면 `small`, `medium`, `large-v3`로 올릴 수 있습니다. `distil-large-v3` 는 Hugging Face 기준 **영어** 증류 모델이라 한국어 음성이 영어로 잘못 전사될 수 있습니다.
+- `WHISPERX_COMPUTE_TYPE`: faster-whisper 계산 타입 (Docker CPU 기본값: `int8`)
 
 ```bash
 cp .env.example .env

@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { ChevronRight } from "lucide-react";
 import { useNavigate } from "react-router-dom";
@@ -21,27 +21,6 @@ import { formatTodayYmd } from "@/app/utils/formatTodayYmd";
 
 function emrStatusLabel(status: DashboardRecordRow["emrSyncStatus"]): string {
   return status === "sent" ? "전송완료" : "미전송";
-}
-
-function pickKeywords(records: DashboardRecordRow[], templatesMap?: TemplateUiConfigMap) {
-  const stopwords = new Set([
-    "기록",
-    "기록지",
-    "간호",
-    "음성",
-    "OCR",
-    "기반",
-    "생성",
-  ]);
-  const words = records
-    .flatMap((row) => [
-      row.title,
-      classificationLabelForTemplate(row.recordType, templatesMap),
-    ])
-    .flatMap((value) => value.split(/[\s\-_/·,()[\]]+/))
-    .map((word) => word.trim())
-    .filter((word) => word.length >= 2 && !stopwords.has(word));
-  return [...new Set(words)].slice(0, 8);
 }
 
 function RecordCard({
@@ -108,10 +87,6 @@ export default function Dashboard() {
   };
   const todayCreatedTotal =
     stats.todayVoiceRecords + stats.todayRecordBasedRecords + stats.todayOcrRecords;
-  const keywords = useMemo(
-    () => pickKeywords([...recentCreated, ...recentUpdated], templatesMapQuery.data),
-    [recentCreated, recentUpdated, templatesMapQuery.data],
-  );
   const displayName = user?.name?.trim() || user?.loginId?.trim() || "간호사";
 
   const openRecordDetail = (row: DashboardRecordRow) => {
@@ -166,30 +141,7 @@ export default function Dashboard() {
 
         <section>
           <h2 className="mb-5 text-2xl font-bold text-[#111827]">주요 키워드</h2>
-          <div className="mobile-app-card p-4">
-            <div className="mb-5 grid grid-cols-2 rounded-md bg-[#F3F4F6] p-1 text-sm font-semibold text-[#6B7280]">
-              <div className="rounded-md bg-white py-2 text-center text-[#111827] shadow-sm">
-                생성 키워드
-              </div>
-              <div className="py-2 text-center">요약 키워드</div>
-            </div>
-            {keywords.length > 0 ? (
-              <div className="flex flex-wrap gap-3">
-                {keywords.map((keyword) => (
-                  <span
-                    key={keyword}
-                    className="rounded-full bg-[#EFF6FF] px-4 py-2 text-sm font-bold text-[#2563EB]"
-                  >
-                    {keyword}
-                  </span>
-                ))}
-              </div>
-            ) : (
-              <p className="py-5 text-center text-sm text-[#9CA3AF]">
-                최근 기록에서 표시할 키워드가 없습니다.
-              </p>
-            )}
-          </div>
+          <div className="mobile-app-card min-h-[112px] p-4" aria-hidden="true" />
         </section>
 
         <section>

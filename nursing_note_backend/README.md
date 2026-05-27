@@ -19,7 +19,7 @@
 | handover-records | 인수인계 기록 관리 |
 | ai-draft | AI 기반 초안 생성 |
 | ocr | OCR 텍스트 인식 |
-| stt | CLOVA 기반 음성-텍스트 변환 |
+| stt | WhisperX 기반 음성-텍스트 변환 |
 
 ## 시작하기
 
@@ -42,11 +42,9 @@ DB_USER=nursing_user
 DB_PASSWORD=nursing_pass_1234
 JWT_SECRET=dev-change-me-in-production
 JWT_EXPIRES=7d
-STT_PROVIDER=clova-speech
+STT_PROVIDER=legacy
 PY_STT_TIMEOUT_MS=180000
-CLOVA_SPEECH_INVOKE_URL=
-CLOVA_SPEECH_SECRET_KEY=
-CLOVA_SPEECH_LANGUAGE=ko-KR
+PY_STT_API_URL=http://127.0.0.1:8000/v1/transcribe
 ```
 
 빠르게 시작하려면 [`nursing_note_backend/.env.example`](/Users/blisian/.codex/worktrees/a6be/nnote/nursing_note_backend/.env.example:1) 를 복사해 `.env`로 사용하면 됩니다.
@@ -55,13 +53,9 @@ CLOVA_SPEECH_LANGUAGE=ko-KR
 
 - AI 초안 생성: `CLOVA_API_URL`, `CLOVA_API_SECRET_KEY`
 - OCR: `NAVER_OCR_API_URL`, `NAVER_OCR_SECRET_KEY`
-- STT(CLOVA Speech): `STT_PROVIDER=clova-speech`, `CLOVA_SPEECH_INVOKE_URL`, `CLOVA_SPEECH_SECRET_KEY`, `CLOVA_SPEECH_LANGUAGE`
-- STT(CLOVA CSR 대안): `STT_PROVIDER=clova-csr`, `CLOVA_CSR_CLIENT_ID`, `CLOVA_CSR_CLIENT_SECRET`, `CLOVA_CSR_LANGUAGE`
-- STT(로컬 fallback): `STT_PROVIDER=legacy`, `PY_STT_API_URL`
+- STT(로컬 WhisperX): `STT_PROVIDER=legacy`, `PY_STT_API_URL`
 - 자동완성(Qdrant): `QDRANT_URL`, `QDRANT_API_KEY`, `QDRANT_COLLECTION`
 - 초기 관리자 자동 생성(선택): `BOOTSTRAP_ADMIN_LOGIN`, `BOOTSTRAP_ADMIN_PASSWORD`, `BOOTSTRAP_ADMIN_NAME`
-
-`CLOVA_SPEECH_SECRET_KEY`는 CLOVA Speech 빌더의 설정 > 연동 정보에서 확인하는 도메인 Secret Key입니다. CLOVA Studio LLM 호출용 `CLOVA_API_SECRET_KEY`와는 별도로 관리하는 값입니다.
 
 ### 3. 개발 서버 실행
 
@@ -69,7 +63,7 @@ CLOVA_SPEECH_LANGUAGE=ko-KR
 npm run dev
 ```
 
-기본 STT는 CLOVA Speech를 사용합니다. 로컬 WhisperX 서비스는 fallback이 필요할 때만 별도로 켜고, 백엔드 `.env`에 `STT_PROVIDER=legacy`와 `PY_STT_API_URL`을 설정합니다.
+STT는 로컬 WhisperX 서비스를 사용합니다. 백엔드 `.env`에 `STT_PROVIDER=legacy`와 `PY_STT_API_URL`을 설정한 뒤 WhisperX 서비스를 함께 실행합니다.
 
 ```bash
 cd ../nursing_note_stt_service
@@ -79,7 +73,7 @@ pip install -r requirements.txt
 uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
-Docker Compose에서 로컬 STT fallback까지 같이 띄울 때는 `docker compose --profile local-stt up -d`를 사용하고, 컨테이너 내부 백엔드 기준 `PY_STT_API_URL=http://stt:8000/v1/transcribe`로 설정합니다.
+Docker Compose에서 WhisperX까지 같이 띄울 때는 `docker compose --profile local-stt up -d`를 사용하고, 컨테이너 내부 백엔드 기준 `PY_STT_API_URL=http://stt:8000/v1/transcribe`로 설정합니다.
 
 서버가 `http://localhost:3001` 에서 실행되며, 모든 API 엔드포인트는 `/api` 접두사로 시작합니다.
 

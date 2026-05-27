@@ -161,7 +161,7 @@ export class AiDraftService {
           : '';
       const keys =
         f.optionKeys && f.optionKeys.length > 0
-          ? ` — allowedKeys: ${f.optionKeys.map((k) => `"${k}"`).join(', ')}`
+          ? ` — allowedKeys: ${this.formatOptionGuide(f)}`
           : '';
       return `  "${f.key}": ""  // ${f.label}${desc}${vt}${sources}${keys}${decisionGuide}`;
     });
@@ -178,6 +178,19 @@ export class AiDraftService {
 - multi_select: 값은 allowedKeys에 있는 키들만 쉼표(,)로 연결한 문자열이거나 빈 문자열("")입니다. (예: "키A,키B"). 순서는 자유이나 키는 allowedKeys만 사용합니다.
 - allowedKeys에 없는 표현은 임의로 새 선택지를 만들지 말고, 명확히 대응되지 않으면 빈 문자열("")로 둡니다.
 - inputSources에 STT가 없는 필드는 STT 원문만으로는 채우지 말고, 원문에 명시 근거가 있을 때만 채웁니다.
+- 원문에 해당 항목이 언급되지 않았고 allowedKeys에 "없음", "해당 없음" 또는 "기본"이라고 표시된 옵션이 있으면 그 값을 기본값으로 사용합니다.
+- "있음"은 원문에 해당 증상/병력/상태가 명시적으로 있을 때만 선택합니다. 언급이 없으면 "있음"을 선택하지 마세요.
+- "가족력", "알레르기", "호흡기 증상", "부종", "종교", "흡연/음주", "보호자", "퇴원 예정"처럼 대화에 나오지 않은 항목은 추측하지 말고 기본값/없음/공백으로 둡니다.
+- 상위 항목이 "없음" 또는 공백인 경우 하위 상세 항목은 반드시 공백입니다.
+`
+      : '';
+    const hasNumberFields = fields.some((f) => f.valueType === 'number');
+    const numberRules = hasNumberFields
+      ? `
+숫자 필드 규칙(valueType=number):
+- 값은 브라우저 숫자 입력칸에 들어갈 수 있는 단일 숫자만 사용합니다. "5-6", "5/6", "3점" 같은 범위·단위·서술형 문자열은 쓰지 않습니다.
+- 원문이 범위나 후보값으로 말한 경우 가장 임상적으로 의미 있는 단일 숫자로 정리합니다. 통증 강도는 언급된 숫자 중 더 큰 값을 사용합니다.
+- 근거 숫자가 원문에 없으면 빈 문자열("")로 둡니다.
 `
       : '';
     const hintLines = (structuredHints ?? [])
@@ -191,7 +204,9 @@ export class AiDraftService {
 아래 원문 텍스트만 근거로 각 필드를 채웁니다. 원문에 없는 정보는 추측하지 말고 반드시 빈 문자열("")로 둡니다.
 이 요청은 "신규 생성(환자 기본정보+메모)" 또는 "기록 기반 생성(이전 기록 텍스트)" 중 하나일 수 있으며, 전달된 원문 밖의 사실은 만들지 않습니다.
 각 필드 주석의 "판단 기준"은 해당 필드를 채워도 되는 근거와 해석 기준입니다. 판단 기준과 원문 근거가 맞지 않으면 값을 만들지 말고 빈 문자열("")로 둡니다.
+환자 성별·나이·보호자·과거력·가족력·알레르기·생활습관·종교·퇴원정보·신체계통 증상은 원문에 직접 말한 경우에만 채웁니다.
 ${choiceRules}
+${numberRules}
 반드시 아래 키만 가진 JSON 객체 하나만 출력하세요 (키 이름과 순서는 유지):
 {
 ${fieldLines.join(',\n')}
@@ -202,9 +217,10 @@ ${hintGuide}
 다른 설명·마크다운·코드펜스 없이 JSON만 출력하세요.`;
     const parsed = await this.callClovaApi(systemPrompt, text);
     const out: Record<string, string> = {};
+    const evidenceText = this.extractEvidenceText(text);
     for (const f of fields) {
       const v = parsed[f.key];
-      out[f.key] = this.normalizeTemplateFillValue(v, f);
+      out[f.key] = this.normalizeTemplateFillValue(v, f, evidenceText);
     }
     return out;
   }
@@ -274,22 +290,54 @@ ${hintGuide}
     };
   }
 
-  private normalizeTemplateFillValue(value: unknown, field: TemplateFieldSpecDto): string {
-    if (value == null) return '';
-    const text = String(value).trim();
-    if (!text) return '';
+  private normalizeTemplateFillValue(
+    value: unknown,
+    field: TemplateFieldSpecDto,
+    evidenceText = '',
+  ): string {
     const vt = field.valueType;
     const keys = (field.optionKeys ?? [])
       .map((k) => String(k).trim())
       .filter((k) => k.length > 0);
     const allowed = new Set(keys);
+    if (value == null) {
+      if (
+        (vt === 'single_select' || vt === 'multi_select') &&
+        keys.length > 0
+      ) {
+        return this.defaultChoiceValue(field);
+      }
+      return '';
+    }
+    const text = String(value).trim();
+    if (!text) {
+      if (vt === 'single_select' && keys.length > 0) return this.defaultChoiceValue(field);
+      if (vt === 'multi_select' && keys.length > 0) return this.defaultChoiceValue(field);
+      return '';
+    }
     if (vt === 'multi_select' && keys.length > 0) {
       const parts = text.split(',').map((p) => p.trim()).filter((p) => p.length > 0);
       const kept = parts.filter((p) => allowed.has(p));
-      return [...new Set(kept)].sort().join(',');
+      return [...new Set(kept)]
+        .filter((p) => this.hasChoiceEvidence(p, field, evidenceText))
+        .sort()
+        .join(',');
     }
     if (vt === 'single_select' && keys.length > 0) {
-      return allowed.has(text) ? text : '';
+      if (!allowed.has(text)) return '';
+      if (this.hasChoiceEvidence(text, field, evidenceText)) {
+        return text;
+      }
+      return this.defaultChoiceValue(field);
+    }
+    if (this.isGenericPlaceholderValue(text, field, evidenceText)) {
+      return '';
+    }
+    if (vt === 'number') {
+      if (!/\d/.test(text) || !this.hasNumberEvidence(text, evidenceText)) {
+        return '';
+      }
+      return this.normalizeNumberTemplateValue(text, field);
     }
     const lowerLabel = `${field.key} ${field.label}`.toLowerCase();
     if (/(혈압|blood pressure|bp)/i.test(lowerLabel)) {
@@ -301,6 +349,172 @@ ${hintGuide}
       if (m) return m[1];
     }
     return text;
+  }
+
+  private formatOptionGuide(field: TemplateFieldSpecDto): string {
+    if (field.options?.length) {
+      return field.options
+        .map((o) => {
+          const key = String(o.optionKey ?? '').trim();
+          const label = String(o.label ?? '').trim();
+          return label && label !== key ? `"${key}"(${label})` : `"${key}"`;
+        })
+        .join(', ');
+    }
+    return (field.optionKeys ?? []).map((k) => `"${k}"`).join(', ');
+  }
+
+  private extractEvidenceText(text: string): string {
+    const marker = '[음성 STT 원문]';
+    const idx = text.indexOf(marker);
+    const raw = idx >= 0 ? text.slice(idx + marker.length) : text;
+    const nextMarker = raw.search(/\n\s*\[/);
+    return (nextMarker >= 0 ? raw.slice(0, nextMarker) : raw)
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  private optionLabel(field: TemplateFieldSpecDto, key: string): string {
+    const option = field.options?.find((o) => String(o.optionKey ?? '').trim() === key);
+    return String(option?.label ?? key).trim();
+  }
+
+  private defaultChoiceValue(field: TemplateFieldSpecDto): string {
+    const options = field.options ?? [];
+    const byDefault = options.find((o) =>
+      /기본/.test(`${o.optionKey ?? ''} ${o.label ?? ''}`),
+    );
+    if (byDefault?.optionKey) return String(byDefault.optionKey).trim();
+
+    const byNone = options.find((o) =>
+      /^(없음|해당\s*없음|무)$/.test(String(o.optionKey ?? '').trim()) ||
+      /^(없음|해당\s*없음|무)$/.test(String(o.label ?? '').trim()),
+    );
+    if (byNone?.optionKey) return String(byNone.optionKey).trim();
+
+    const keys = field.optionKeys ?? [];
+    return keys.find((k) => /^(없음|해당\s*없음|무)$/.test(String(k).trim())) ?? '';
+  }
+
+  private hasChoiceEvidence(
+    selectedKey: string,
+    field: TemplateFieldSpecDto,
+    evidenceText: string,
+  ): boolean {
+    const source = evidenceText.replace(/\s+/g, ' ').trim();
+    if (!source) return false;
+
+    const defaultValue = this.defaultChoiceValue(field);
+    if (selectedKey === defaultValue) return true;
+
+    const label = this.optionLabel(field, selectedKey);
+    const fieldText = `${field.key} ${field.label} ${field.description ?? ''} ${field.aiHint ?? ''} ${field.sourceDefinition ?? ''}`;
+    if (this.includesMeaningfulTerm(source, selectedKey) || this.includesMeaningfulTerm(source, label)) {
+      return true;
+    }
+
+    if (/통증|통증부위|통증양상|pain/i.test(fieldText)) {
+      return /(통증|아프|아파|아픈|욱신|쑤시|쑤심|당기|땅기|찌르|저리|불편|수술\s*부위)/i.test(source);
+    }
+    if (/수면|잠|sleep/i.test(fieldText)) {
+      return /(잠|수면|깼|깨다|못\s*잤|불면)/i.test(source);
+    }
+    if (/오심|구토|구역|nausea|vomit/i.test(fieldText)) {
+      return /(오심|구역|메스꺼|구토|토했)/i.test(source);
+    }
+    if (/호흡|객담|기침|숨|respir/i.test(fieldText)) {
+      if (/기침/.test(source) && /통증|아프|점|올라가|심하/i.test(source)) {
+        return false;
+      }
+      return /(호흡|숨|기침|객담|가래|숨차|호흡곤란)/i.test(source);
+    }
+    if (/부종|edema/i.test(fieldText)) {
+      return /(부종|붓|부었|붓기|edema)/i.test(source);
+    }
+    if (/가족력|family/i.test(fieldText)) {
+      return /(가족력|가족.*병|부모.*병|형제.*병)/i.test(source);
+    }
+    if (/알레르|allerg/i.test(fieldText)) {
+      return /(알레르|allerg|두드러기|아나필락|약.*부작용|음식.*못)/i.test(source);
+    }
+    if (/종교|relig/i.test(fieldText)) {
+      return /(종교|기독교|천주교|불교|원목|목사|신부|법사)/i.test(source);
+    }
+    if (/흡연|smok/i.test(fieldText)) {
+      return /(흡연|담배|smok)/i.test(source);
+    }
+    if (/음주|drink|alcohol/i.test(fieldText)) {
+      return /(음주|술|drink|alcohol)/i.test(source);
+    }
+    if (/소화기|연하|오심|구토|복부|속쓰림|토혈|삼킴/i.test(fieldText)) {
+      return /(소화|연하|삼키|오심|구토|토했|메스꺼|복부|속쓰림|토혈|복수|복부팽만)/i.test(source);
+    }
+    if (/보호자|퇴원|교통|caregiver|discharge/i.test(fieldText)) {
+      return /(보호자|배우자|자녀|퇴원|귀가|자택|구급차|자가|대중교통)/i.test(source);
+    }
+
+    return false;
+  }
+
+  private includesMeaningfulTerm(source: string, term: string): boolean {
+    const t = String(term).trim();
+    if (!t || t.length < 2) return false;
+    if (/^(있음|없음|예|아니오|yes|no|기타)$/i.test(t)) return false;
+    return source.includes(t);
+  }
+
+  private hasNumberEvidence(value: string, evidenceText: string): boolean {
+    const numbers = value.match(/\d+(?:\.\d+)?/g) ?? [];
+    if (!numbers.length) return true;
+    return numbers.some((n) => evidenceText.includes(n));
+  }
+
+  private normalizeNumberTemplateValue(
+    value: string,
+    field: TemplateFieldSpecDto,
+  ): string {
+    const numbers = value.match(/-?\d+(?:\.\d+)?/g) ?? [];
+    if (!numbers.length) return '';
+    const trimmed = value.trim();
+    if (/^-?\d+(?:\.\d+)?$/.test(trimmed)) return trimmed;
+
+    const fieldText = `${field.key} ${field.label}`.toLowerCase();
+    if (/(통증|pain|npis|nrs|강도|점수|score)/i.test(fieldText)) {
+      const finite = numbers
+        .map((n) => Number(n))
+        .filter((n) => Number.isFinite(n));
+      if (finite.length > 0) {
+        return String(Math.max(...finite));
+      }
+    }
+    return numbers[0] ?? '';
+  }
+
+  private isGenericPlaceholderValue(
+    value: string,
+    field: TemplateFieldSpecDto,
+    evidenceText: string,
+  ): boolean {
+    const v = value.trim();
+    if (!v) return false;
+    const fieldName = field.label.split('·').pop()?.trim() ?? field.label;
+    const metadataValues = [
+      fieldName,
+      field.label,
+      field.key,
+      field.description,
+      field.aiHint,
+      field.sourceDefinition,
+    ]
+      .map((item) => String(item ?? '').trim())
+      .filter(Boolean);
+    if (metadataValues.some((item) => v === item || item.includes(v) || v.includes(item))) {
+      return !this.includesMeaningfulTerm(evidenceText, v);
+    }
+    if (/^(있음|기타|악화요인|완화요인|증상 시작시기|약물명\/1회 투여량\/1회 투여단위\/횟수\/용법 및 투여시간\/약품 코드\/유효함량)$/i.test(v)) {
+      return !this.includesMeaningfulTerm(evidenceText, v);
+    }
+    return false;
   }
 
   private mergeTemplateFieldGuide(
