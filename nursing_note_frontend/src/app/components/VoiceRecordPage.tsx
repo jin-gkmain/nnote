@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Check,
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
+  ChevronUp,
   FileUp,
   Mic,
   Pause,
@@ -249,6 +251,7 @@ export default function VoiceRecordPage() {
   const [liveTranscriptStatus, setLiveTranscriptStatus] =
     useState<LiveTranscriptStatus>("idle");
   const [liveTranscriptNotice, setLiveTranscriptNotice] = useState("");
+  const [liveTranscriptPanelOpen, setLiveTranscriptPanelOpen] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
   /** 오버레이 문구·진행 막대 구간용 */
   const [generationPhase, setGenerationPhase] = useState<
@@ -1257,6 +1260,14 @@ export default function VoiceRecordPage() {
     }
     return { label: "대기", dot: "bg-[#9CA3AF]", text: "text-[#6B7280]" };
   }, [liveTranscriptStatus, recordingState]);
+  const showLiveTranscriptDock =
+    !generatedDraft && inputMode === "record" && !isGenerating && !isSaving;
+
+  useEffect(() => {
+    if (showLiveTranscriptDock && recordingState === "recording") {
+      setLiveTranscriptPanelOpen(true);
+    }
+  }, [recordingState, showLiveTranscriptDock]);
 
   useEffect(() => {
     if (!generatedDraft || generatedDraft.sttSegments.length === 0) {
@@ -1293,9 +1304,9 @@ export default function VoiceRecordPage() {
 
   useEffect(() => {
     const el = liveTranscriptScrollRef.current;
-    if (!el) return;
+    if (!el || !liveTranscriptPanelOpen) return;
     el.scrollTop = el.scrollHeight;
-  }, [liveTranscript, liveInterimTranscript]);
+  }, [liveTranscript, liveInterimTranscript, liveTranscriptPanelOpen]);
 
   if (flowStep === "templates" && !generatedDraft && !isGenerating) {
     return (
@@ -1312,7 +1323,7 @@ export default function VoiceRecordPage() {
           </p>
         </div>
 
-        <div className="flex flex-col gap-2.5 pb-36">
+        <div className="flex flex-col gap-2.5 pb-44">
           {availableTemplates.map((templateId) => {
             const selected = selectedTemplates.includes(templateId);
             const disabled = !selected && selectedTemplates.length >= 3;
@@ -1347,7 +1358,7 @@ export default function VoiceRecordPage() {
 
         {error ? <p className="mt-4 text-sm text-red-600">{error}</p> : null}
 
-        <div className="fixed inset-x-0 bottom-[calc(var(--nursing-mobile-tabbar-height)-0.75rem)] z-20 border-t border-[#E5E7EB] bg-white/95 px-5 pb-3 pt-3 shadow-[0_-8px_18px_rgba(17,24,39,0.08)] backdrop-blur lg:left-[100px] lg:bottom-0 lg:px-10">
+        <div className="fixed inset-x-0 bottom-[var(--nursing-mobile-tabbar-height)] z-20 border-t border-[#E5E7EB] bg-white/95 px-5 pb-3 pt-3 shadow-[0_-8px_18px_rgba(17,24,39,0.08)] backdrop-blur lg:left-[100px] lg:bottom-0 lg:px-10">
           <div className="mx-auto flex max-w-[720px] items-center gap-3 lg:max-w-none">
             <div className="min-w-[4.5rem] shrink-0">
               <p className="text-xs font-semibold text-[#6B7280]">선택</p>
@@ -1492,7 +1503,7 @@ export default function VoiceRecordPage() {
             <div className="mt-3 text-[56px] font-bold leading-none tracking-tight text-[#20242C] sm:text-[88px]">
               {formatDuration(recordingSec)}
             </div>
-            <div className="mt-8 flex h-5 items-center justify-center gap-2">
+            <div className="mt-8 flex h-5 w-full max-w-full items-center justify-center gap-1.5 overflow-hidden sm:gap-2">
               {Array.from({ length: 28 }).map((_, index) => {
                 const active = recordingState === "recording" && index % 5 !== 0;
                 return (
@@ -1783,7 +1794,7 @@ export default function VoiceRecordPage() {
             </div>
 
             {generationMeta && audioPlaybackUrl ? (
-              <aside className="mobile-app-card max-h-[min(100vh,800px)] min-h-0 overflow-y-auto overscroll-contain p-4 lg:col-span-1">
+              <aside className="mobile-app-card min-h-0 p-4 lg:col-span-1 lg:max-h-[min(100vh,800px)] lg:overflow-y-auto lg:overscroll-contain">
               <div className="mb-3">
                 <p
                   className="truncate text-lg font-semibold text-gray-900"
@@ -1815,7 +1826,7 @@ export default function VoiceRecordPage() {
                     setCurrentPlaybackSec(segment.startSec);
                     setActiveSegmentId(segment.id);
                   }}
-                  className="max-h-[calc(100vh-22rem)] space-y-1.5 overflow-y-auto pr-1"
+                  className="space-y-1.5 lg:max-h-[calc(100vh-22rem)] lg:overflow-y-auto lg:pr-1"
                 />
               </div>
               </aside>
@@ -1828,19 +1839,48 @@ export default function VoiceRecordPage() {
         <div className="flex-1" aria-hidden />
       </div>
 
-      {!generatedDraft && inputMode === "record" && !isGenerating && !isSaving ? (
-        <section className="-mt-5 mb-[var(--nursing-mobile-tabbar-height)] overflow-hidden rounded-t-3xl border border-[#E5E7EB] bg-white shadow-[0_-4px_12px_rgba(17,24,39,0.05)] lg:mb-0 lg:mt-auto">
+      {showLiveTranscriptDock ? (
+        <>
+        {!liveTranscriptPanelOpen ? (
+          <button
+            type="button"
+            onClick={() => setLiveTranscriptPanelOpen(true)}
+            className="fixed bottom-[calc(var(--nursing-mobile-tabbar-height)+0.85rem)] right-4 z-20 inline-flex min-h-11 items-center gap-2 rounded-full border border-[#DBEAFE] bg-white px-4 text-sm font-bold text-[#2563EB] shadow-[0_8px_24px_rgba(37,99,235,0.18)] lg:hidden"
+            aria-expanded="false"
+            aria-controls="live-transcript-panel"
+          >
+            <span className={`h-2 w-2 rounded-full ${liveStatusMeta.dot}`} />
+            실시간 전사
+            <ChevronUp className="h-4 w-4" strokeWidth={2.4} />
+          </button>
+        ) : null}
+        <section
+          id="live-transcript-panel"
+          className={`${liveTranscriptPanelOpen ? "fixed" : "hidden"} inset-x-0 bottom-[var(--nursing-mobile-tabbar-height)] z-20 max-h-[min(72dvh,520px)] overflow-hidden rounded-t-3xl border border-[#E5E7EB] bg-white shadow-[0_-8px_24px_rgba(17,24,39,0.12)] lg:static lg:mt-auto lg:block lg:max-h-none lg:overflow-hidden lg:shadow-[0_-4px_12px_rgba(17,24,39,0.05)]`}
+        >
           <div className="mx-auto mt-1 h-1 w-20 rounded-full bg-[#D1D5DB] sm:h-1.5 sm:w-24" />
           <div className="flex items-center justify-between border-b border-[#E5E7EB] px-5 py-2.5 sm:py-3">
             <h2 className="text-base font-bold text-[#111827] sm:text-xl">실시간 전사</h2>
-            <span className={`inline-flex items-center gap-1.5 rounded-full bg-[#F3F4F6] px-2.5 py-1 text-xs font-bold ${liveStatusMeta.text}`}>
-              <span className={`h-2 w-2 rounded-full ${liveStatusMeta.dot}`} />
-              {liveStatusMeta.label}
-            </span>
+            <div className="flex items-center gap-2">
+              <span className={`inline-flex items-center gap-1.5 rounded-full bg-[#F3F4F6] px-2.5 py-1 text-xs font-bold ${liveStatusMeta.text}`}>
+                <span className={`h-2 w-2 rounded-full ${liveStatusMeta.dot}`} />
+                {liveStatusMeta.label}
+              </span>
+              <button
+                type="button"
+                onClick={() => setLiveTranscriptPanelOpen(false)}
+                className="inline-flex h-8 w-8 items-center justify-center rounded-full text-[#6B7280] transition-colors hover:bg-[#F3F4F6] lg:hidden"
+                aria-label="실시간 전사 닫기"
+                aria-expanded="true"
+                aria-controls="live-transcript-panel"
+              >
+                <ChevronDown className="h-5 w-5" strokeWidth={2.4} />
+              </button>
+            </div>
           </div>
           <div
             ref={liveTranscriptScrollRef}
-            className="max-h-[78px] min-h-[78px] overflow-y-auto px-5 py-3 sm:max-h-[220px] sm:min-h-[178px] sm:px-7 sm:py-8"
+            className="max-h-[calc(min(72dvh,520px)-9.75rem)] min-h-[132px] overflow-y-auto px-5 py-3 sm:px-7 sm:py-8 lg:max-h-[220px] lg:min-h-[178px]"
             aria-live="polite"
           >
             {liveTranscript || liveInterimTranscript ? (
@@ -1888,6 +1928,7 @@ export default function VoiceRecordPage() {
             </button>
           </div>
         </section>
+        </>
       ) : null}
 
       <SelectVoiceRecordTemplatesModal

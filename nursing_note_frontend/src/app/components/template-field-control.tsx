@@ -77,7 +77,6 @@ export function TemplateFieldControl({
         <InputAssistField
           templateId={templateId}
           fieldKey={field.storageKey}
-          patientId={patientId}
           multiline
           rows={3}
           readOnly={readOnly}
@@ -120,7 +119,7 @@ export function TemplateFieldControl({
         fieldKey={field.storageKey}
         type="number"
         readOnly={readOnly}
-        value={value}
+        value={coerceNumberInputValue(value)}
         onChange={onChange}
         className={classNameInputShort}
       />
@@ -164,7 +163,6 @@ export function TemplateFieldControl({
           <InputAssistField
             templateId={templateId}
             fieldKey={`${field.storageKey}_free_text`}
-            patientId={patientId}
             readOnly={readOnly}
             value={parsedValue.freeText}
             onChange={(next) => onChange(serializeSingleSelectValue(selectVal, next))}
@@ -253,4 +251,11 @@ function parseSingleSelectValue(value: string): { selected: string; freeText: st
 function serializeSingleSelectValue(selected: string, freeText: string): string {
   if (!selected) return "";
   return JSON.stringify({ selected, freeText });
+}
+
+function coerceNumberInputValue(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) return "";
+  if (/^-?\d+(?:\.\d+)?$/.test(trimmed)) return trimmed;
+  return trimmed.match(/-?\d+(?:\.\d+)?/)?.[0] ?? "";
 }

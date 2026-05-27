@@ -77,9 +77,25 @@ def _transcribe_whisperx(
     if whisperx is None:
         raise HTTPException(status_code=500, detail="WhisperX dependency is unavailable.")
     device = _get_device()
-    model_name = os.getenv("WHISPERX_MODEL", "large-v3")
+    model_name = os.getenv("WHISPERX_MODEL", "base")
+    compute_type = os.getenv(
+        "WHISPERX_COMPUTE_TYPE",
+        "int8" if device == "cpu" else "float16",
+    )
     _warn_if_english_only_model(model_name, language)
-    stt_model = whisperx.load_model(model_name, device=device, language=language)
+    logger.info(
+        "Loading WhisperX model=%s device=%s compute_type=%s language=%s",
+        model_name,
+        device,
+        compute_type,
+        language,
+    )
+    stt_model = whisperx.load_model(
+        model_name,
+        device=device,
+        language=language,
+        compute_type=compute_type,
+    )
     asr_result = stt_model.transcribe(upload_path, language=language)
     align_model, align_metadata = whisperx.load_align_model(
         language_code=language,
@@ -179,6 +195,7 @@ def _transcribe_whisperx(
         "meta": {
             "engine": "whisperx+pyannote",
             "model": model_name,
+            "compute_type": compute_type,
             "processing_ms": elapsed_ms,
             **(
                 {"diarization": "skipped", "diarization_reason": diarization_skip_reason}

@@ -6,7 +6,7 @@ import * as FormData from 'form-data';
  * STT (Speech-to-Text) 서비스
  *
  * 음성 파일을 STT provider에 전송하여 텍스트로 변환
- * - 기본 provider: CLOVA Speech
+ * - 기본 provider: 로컬 WhisperX
  * - 입력: 음성 파일 (wav, webm, mp3 등)
  * - 출력: 변환된 텍스트
  */
@@ -58,7 +58,7 @@ export class SttService {
   private readonly STT_LANGUAGE = process.env.STT_LANGUAGE || 'ko';
   private readonly STT_TIMEOUT = Number(process.env.PY_STT_TIMEOUT_MS ?? 180_000);
   private readonly USE_PYTHON_STT = this.STT_SERVER_URL.includes('/v1/transcribe');
-  private readonly STT_PROVIDER = String(process.env.STT_PROVIDER || 'clova-speech').toLowerCase();
+  private readonly STT_PROVIDER = String(process.env.STT_PROVIDER || 'legacy').toLowerCase();
   private readonly CLOVA_SPEECH_INVOKE_URL = process.env.CLOVA_SPEECH_INVOKE_URL || '';
   private readonly CLOVA_SPEECH_SECRET_KEY = process.env.CLOVA_SPEECH_SECRET_KEY || '';
   private readonly CLOVA_SPEECH_LANGUAGE = process.env.CLOVA_SPEECH_LANGUAGE || 'ko-KR';
@@ -114,6 +114,15 @@ export class SttService {
         }
         if (error.code === 'ECONNREFUSED') {
           throw new BadRequestException('STT 서버에 연결할 수 없습니다.');
+        }
+        if (
+          error.code === 'ECONNRESET' ||
+          error.code === 'EPIPE' ||
+          String(error.message || '').toLowerCase().includes('socket hang up')
+        ) {
+          throw new BadRequestException(
+            'STT 서버 연결이 중간에 끊겼습니다. WhisperX 컨테이너 리소스 또는 모델 설정을 확인하세요.',
+          );
         }
         const data = error.response?.data;
         const detail =
