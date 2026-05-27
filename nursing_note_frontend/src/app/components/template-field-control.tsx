@@ -53,7 +53,7 @@ export function TemplateFieldControl({
         }}
         className={classNameInputShort}
       >
-        <option value={BOOLEAN_FIELD_EMPTY}>— (공백)</option>
+        <option value={BOOLEAN_FIELD_EMPTY}>— (선택)</option>
         <option value={BOOLEAN_FIELD_YES}>예 (YES)</option>
         <option value={BOOLEAN_FIELD_NO}>아니오 (NO)</option>
       </select>
