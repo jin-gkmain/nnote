@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, Pencil } from "lucide-react";
+import { ArrowLeft, ChevronDown, ChevronUp, Pencil } from "lucide-react";
 import { useAuth } from "@/app/auth/auth-context";
 import { ClinicalObservationForm } from "@/app/components/clinical-observation-form";
 import { InputAssistField } from "@/app/components/input-assist-field";
@@ -316,17 +316,32 @@ function RecordMainBody({
   if (isV2RecordData(detail.data)) {
     const fields = templateFields?.filter((field) => !field.hidden) ?? [];
     if (fields.length > 0) {
+      const groupedFields = fields.reduce<Array<{ section: string; fields: typeof fields }>>(
+        (groups, field) => {
+          const { section } = splitTemplateLabel(field.label);
+          const last = groups[groups.length - 1];
+          if (last && last.section === section) {
+            last.fields.push(field);
+          } else {
+            groups.push({ section, fields: [field] });
+          }
+          return groups;
+        },
+        [],
+      );
       return (
         <div className="space-y-5">
-          {fields.map((field) => {
-            const { section, field: fieldLabel } = field.label.includes(" · ")
-              ? splitTemplateLabel(field.label)
-              : { section: "", field: field.label };
+          {groupedFields.map(({ section, fields: sectionFields }) => (
+            <section
+              key={section}
+              className="rounded-xl border border-gray-200 bg-gray-50/70 p-3 sm:p-4"
+            >
+              <h3 className="mb-3 text-sm font-bold text-gray-800">{section}</h3>
+              <div className="space-y-4">
+                {sectionFields.map((field) => {
+                  const { field: fieldLabel } = splitTemplateLabel(field.label);
             return (
-              <div key={field.storageKey} className="rounded-lg border border-gray-100 bg-gray-50/60 p-3">
-                {section ? (
-                  <p className="mb-1 text-[11px] font-semibold text-gray-500">{section}</p>
-                ) : null}
+                    <div key={field.storageKey} className="border-t border-gray-200/70 pt-4 first:border-t-0 first:pt-0">
                 <label className="mb-1.5 block text-xs font-medium text-gray-700">
                   {fieldLabel}
                 </label>
@@ -345,7 +360,10 @@ function RecordMainBody({
                 ) : null}
               </div>
             );
-          })}
+                })}
+              </div>
+            </section>
+          ))}
         </div>
       );
     }
@@ -411,6 +429,7 @@ export function RecordDetailOverlay({
   const [recordTime, setRecordTime] = useState("");
   const [recordTitle, setRecordTitle] = useState("");
   const [saveError, setSaveError] = useState("");
+  const [sourceExpanded, setSourceExpanded] = useState(false);
   const isEmrSending = updateEmrStatusMutation.isPending;
   const isLoading = recordDetailQuery.isLoading || recordDetailQuery.isFetching;
   const canSendEmr = user?.role === "admin" || user?.verificationStatus === "verified";
@@ -436,7 +455,8 @@ export function RecordDetailOverlay({
     setRecordDate(d.recordDate);
     setRecordTime(d.recordTime.slice(0, 5));
     setRecordTitle(d.title ?? "");
-    setIsEditing(false);
+    setIsEditing(d.creationSource === "voice" && d.emrSyncStatus !== "sent");
+    setSourceExpanded(false);
   }, [recordId, recordDetailQuery.data, recordDetailQuery.error]);
 
   const resetEditFromDetail = useCallback(() => {
@@ -630,94 +650,101 @@ export function RecordDetailOverlay({
           <p className="px-4 py-6 text-sm text-gray-600">기록을 불러오는 중…</p>
         ) : null}
         {detail && !loadError ? (
-          <div
-            className={`grid min-h-0 flex-1 grid-cols-1 gap-0 bg-white ${
-              showSourcePanel ? "lg:grid-cols-10 lg:divide-x lg:divide-gray-200" : "lg:grid-cols-1"
-            }`}
-          >
-            <div
-              className={`min-h-0 overflow-y-auto overscroll-contain bg-white pb-[env(safe-area-inset-bottom)] [-webkit-overflow-scrolling:touch] ${showSourcePanel ? "lg:col-span-7" : "lg:col-span-1"}`}
-            >
-              <div className="p-4 sm:p-6">
-                <div className="mb-6 border-b border-gray-100 pb-6">
-                  <div className="flex flex-wrap items-center gap-2 gap-y-2">
-                    <h1 className="text-xl font-bold tracking-tight text-gray-900 sm:text-2xl">
-                      {detail.title?.trim() ? detail.title : detail.documentNumber}
-                    </h1>
-                    <span
-                      className={`inline-flex shrink-0 rounded-full px-2.5 py-0.5 text-xs font-semibold ${emrStatusBadgeClass}`}
-                    >
-                      {emrStatusLabel}
-                    </span>
+          <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain bg-white pb-[env(safe-area-inset-bottom)] [-webkit-overflow-scrolling:touch]">
+            <div className="mx-auto w-full max-w-6xl p-4 sm:p-6">
+              <div className="mb-6 border-b border-gray-100 pb-6">
+                <div className="flex flex-wrap items-center gap-2 gap-y-2">
+                  <h1 className="text-xl font-bold tracking-tight text-gray-900 sm:text-2xl">
+                    {detail.title?.trim() ? detail.title : detail.documentNumber}
+                  </h1>
+                  <span
+                    className={`inline-flex shrink-0 rounded-full px-2.5 py-0.5 text-xs font-semibold ${emrStatusBadgeClass}`}
+                  >
+                    {emrStatusLabel}
+                  </span>
+                </div>
+                <p className="mt-1 text-xs text-gray-500">
+                  #{detail.id} · {detail.documentNumber} · 분류: {detail.recordType}
+                </p>
+                <p className="mt-2 text-sm text-gray-600">
+                  {formatDetailDateTime(detail.recordDate, detail.recordTime)} ·{" "}
+                  {creationSourceLabel(detail.creationSource)}
+                </p>
+                {isEditing ? (
+                  <div className="mt-4 flex flex-wrap gap-3 border-t border-gray-100 pt-4">
+                    <label className="flex min-w-[12rem] flex-1 flex-col gap-1 text-xs font-medium text-gray-700">
+                      기록 제목
+                      <input
+                        value={recordTitle}
+                        onChange={(e) => setRecordTitle(e.target.value)}
+                        maxLength={512}
+                        className="rounded-lg border border-gray-200 bg-white px-2 py-1.5 text-sm text-gray-900"
+                      />
+                    </label>
+                    <label className="flex flex-col gap-1 text-xs font-medium text-gray-700">
+                      기록번호
+                      <input
+                        value={docNumber}
+                        onChange={(e) => setDocNumber(e.target.value)}
+                        className="w-28 rounded-lg border border-gray-200 bg-white px-2 py-1.5 text-sm text-gray-900"
+                      />
+                    </label>
+                    <label className="flex flex-col gap-1 text-xs font-medium text-gray-700">
+                      날짜
+                      <input
+                        type="date"
+                        value={recordDate}
+                        onChange={(e) => setRecordDate(e.target.value)}
+                        className="rounded-lg border border-gray-200 bg-white px-2 py-1.5 text-sm text-gray-900"
+                      />
+                    </label>
+                    <label className="flex flex-col gap-1 text-xs font-medium text-gray-700">
+                      시간
+                      <input
+                        type="time"
+                        value={recordTime}
+                        onChange={(e) => setRecordTime(e.target.value)}
+                        className="rounded-lg border border-gray-200 bg-white px-2 py-1.5 text-sm text-gray-900"
+                      />
+                    </label>
                   </div>
-                  <p className="mt-1 text-xs text-gray-500">
-                    #{detail.id} · {detail.documentNumber} · 분류: {detail.recordType}
-                  </p>
-                  <p className="mt-2 text-sm text-gray-600">
-                    {formatDetailDateTime(detail.recordDate, detail.recordTime)} ·{" "}
-                    {creationSourceLabel(detail.creationSource)}
-                  </p>
-                  {isEditing ? (
-                    <div className="mt-4 flex flex-wrap gap-3 border-t border-gray-100 pt-4">
-                      <label className="flex min-w-[12rem] flex-1 flex-col gap-1 text-xs font-medium text-gray-700">
-                        기록 제목
-                        <input
-                          value={recordTitle}
-                          onChange={(e) => setRecordTitle(e.target.value)}
-                          maxLength={512}
-                          className="rounded-lg border border-gray-200 bg-white px-2 py-1.5 text-sm text-gray-900"
-                        />
-                      </label>
-                      <label className="flex flex-col gap-1 text-xs font-medium text-gray-700">
-                        기록번호
-                        <input
-                          value={docNumber}
-                          onChange={(e) => setDocNumber(e.target.value)}
-                          className="w-28 rounded-lg border border-gray-200 bg-white px-2 py-1.5 text-sm text-gray-900"
-                        />
-                      </label>
-                      <label className="flex flex-col gap-1 text-xs font-medium text-gray-700">
-                        날짜
-                        <input
-                          type="date"
-                          value={recordDate}
-                          onChange={(e) => setRecordDate(e.target.value)}
-                          className="rounded-lg border border-gray-200 bg-white px-2 py-1.5 text-sm text-gray-900"
-                        />
-                      </label>
-                      <label className="flex flex-col gap-1 text-xs font-medium text-gray-700">
-                        시간
-                        <input
-                          type="time"
-                          value={recordTime}
-                          onChange={(e) => setRecordTime(e.target.value)}
-                          className="rounded-lg border border-gray-200 bg-white px-2 py-1.5 text-sm text-gray-900"
-                        />
-                      </label>
+                ) : null}
+              </div>
+              <h2 className="mb-4 text-base font-bold text-gray-900">생성 내용</h2>
+              <RecordMainBody
+                detail={detail}
+                readOnly={!isEditing}
+                editData={editData}
+                templateFields={templateFieldsQuery.data}
+                onFieldChange={handleFieldChange}
+                observationJson={observationJson}
+                onObservationJson={setObservationJson}
+                onClinicalObservationPatch={patchClinicalObservationField}
+              />
+
+              {showSourcePanel ? (
+                <section className="mt-6 border-t border-gray-200 pt-4">
+                  <button
+                    type="button"
+                    onClick={() => setSourceExpanded((prev) => !prev)}
+                    className="flex w-full items-center justify-between gap-3 rounded-lg px-1 py-2 text-left text-base font-bold text-gray-900 hover:bg-gray-50"
+                    aria-expanded={sourceExpanded}
+                  >
+                    <span>원본 내용</span>
+                    {sourceExpanded ? (
+                      <ChevronUp className="h-5 w-5 shrink-0 text-gray-500" aria-hidden />
+                    ) : (
+                      <ChevronDown className="h-5 w-5 shrink-0 text-gray-500" aria-hidden />
+                    )}
+                  </button>
+                  {sourceExpanded ? (
+                    <div className="mt-3 max-h-[60vh] min-h-[220px] overflow-y-auto rounded-lg border border-gray-200 bg-gray-50 p-3">
+                      <RecordSourcePanel detail={detail} />
                     </div>
                   ) : null}
-                </div>
-                <h2 className="mb-4 text-base font-bold text-gray-900">생성 내용</h2>
-                <RecordMainBody
-                  detail={detail}
-                  readOnly={!isEditing}
-                  editData={editData}
-                  templateFields={templateFieldsQuery.data}
-                  onFieldChange={handleFieldChange}
-                  observationJson={observationJson}
-                  onObservationJson={setObservationJson}
-                  onClinicalObservationPatch={patchClinicalObservationField}
-                />
-              </div>
+                </section>
+              ) : null}
             </div>
-            {showSourcePanel ? (
-              <div className="min-h-0 overflow-y-auto overscroll-contain border-t border-gray-200 bg-white [-webkit-overflow-scrolling:touch] lg:col-span-3 lg:border-t-0 lg:border-l-0">
-                <div className="flex h-full min-h-[200px] flex-col p-4 sm:p-6">
-                  <h2 className="mb-4 text-base font-bold text-gray-900">원본 내용</h2>
-                  <RecordSourcePanel detail={detail} />
-                </div>
-              </div>
-            ) : null}
           </div>
         ) : null}
       </div>

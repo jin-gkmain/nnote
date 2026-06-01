@@ -195,6 +195,18 @@ export class AiDraftService {
 - 근거 숫자가 원문에 없으면 빈 문자열("")로 둡니다.
 `
       : '';
+    const hasTextFields = fields.some(
+      (f) => f.valueType === 'text_short' || f.valueType === 'text_long',
+    );
+    const textRules = hasTextFields
+      ? `
+텍스트 필드 규칙(valueType=text_short/text_long):
+- 간호사 질문을 그대로 복사하지 마세요. 환자/보호자 답변 또는 관찰된 사실만 작성합니다.
+- 문장은 질문형이 아니라 평서문으로 작성합니다. "있으신가요?", "드릴까요?", "여쭤보겠습니다" 같은 표현은 금지입니다.
+- 대화체를 그대로 옮기기보다 기록지에 들어갈 짧은 사실 문장/명사형으로 정리합니다. 예: "오늘 아침 화장실에서 미끄러져 우측 둔부 통증으로 응급실 내원함".
+- 필드 의미와 맞는 답변이 없으면 빈 문자열("")로 둡니다.
+`
+      : '';
     const hintLines = (structuredHints ?? [])
       .filter((h) => h && h.key && h.value)
       .map((h) => `- ${h.key}: ${h.value} (confidence=${Number(h.confidence ?? 0).toFixed(2)}, source=${h.source ?? 'input'})`)
@@ -214,8 +226,10 @@ export class AiDraftService {
 3. 같은 원문 문장을 여러 필드에 사용할 수 있지만, 필드 의미가 다르면 복사하지 마세요.
 4. 선택형 필드는 원문 의미와 allowedKeys가 정확히 대응될 때만 선택합니다.
 5. 숫자·텍스트 필드는 원문 문장을 그대로 길게 복사하지 말고 해당 필드에 필요한 핵심 값/구문만 씁니다.
+6. 텍스트 필드에는 질문문을 넣지 말고, 반드시 평서문/기록문 형태로 씁니다.
 ${choiceRules}
 ${numberRules}
+${textRules}
 ${checklistGuide}
 
 반드시 아래 키만 가진 JSON 객체 하나만 출력하세요 (키 이름과 순서는 유지):
@@ -386,7 +400,7 @@ ${hintGuide}
         this.isGenericPlaceholderValue(text, field, evidenceText) ||
         this.isLikelyQuestionInsteadOfAnswer(text, field))
     ) {
-      return inferredText;
+      return this.normalizeDeclarativeFieldText(inferredText, field);
     }
     if (/(혈압|blood pressure|bp)/i.test(lowerLabel)) {
       const m = text.match(/(\d{2,3})\s*\/\s*(\d{2,3})/);
@@ -396,8 +410,14 @@ ${hintGuide}
       const m = text.match(/(\d{2,3}(?:\.\d+)?)/);
       if (m) return m[1];
     }
+    if (this.isTextField(field)) {
+      if (this.isLikelyQuestionInsteadOfAnswer(text, field)) {
+        return inferredText ? this.normalizeDeclarativeFieldText(inferredText, field) : '';
+      }
+      return this.normalizeDeclarativeFieldText(text, field);
+    }
     return this.isLikelyQuestionInsteadOfAnswer(text, field) && inferredText
-      ? inferredText
+      ? this.normalizeDeclarativeFieldText(inferredText, field)
       : text;
   }
 
@@ -984,10 +1004,55 @@ ${lines.join('\n')}`;
   }
 
   private bestEvidenceSentence(text: string, patterns: RegExp[]): string {
-    const sentence = this.splitEvidenceSentences(text).find((item) =>
-      patterns.some((pattern) => pattern.test(item)),
-    );
+    const sentence = this.splitEvidenceSentences(text)
+      .map((item) => this.stripSpeakerPrefix(item))
+      .find(
+        (item) =>
+          patterns.some((pattern) => pattern.test(item)) &&
+          !this.isQuestionLikeSentence(item),
+      );
     return sentence ? this.truncateEvidence(sentence) : '';
+  }
+
+  private isTextField(field: TemplateFieldSpecDto): boolean {
+    return field.valueType === 'text_short' || field.valueType === 'text_long';
+  }
+
+  private stripSpeakerPrefix(value: string): string {
+    return value.replace(/^(간호사|환자|보호자)(?:\([^)]*\))?:\s*/i, '').trim();
+  }
+
+  private isQuestionLikeSentence(value: string): boolean {
+    return /[?？]|습니까|나요|신가요|있으신가요|드릴게요|여쭤|확인하겠습니다|말씀해주시면/.test(
+      value.trim(),
+    );
+  }
+
+  private normalizeDeclarativeFieldText(
+    value: string,
+    field: TemplateFieldSpecDto,
+  ): string {
+    const stripped = this.stripSpeakerPrefix(value)
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (!stripped) return '';
+    if (this.isQuestionLikeSentence(stripped)) return '';
+    if (this.isGenericPlaceholderValue(stripped, field, '')) return '';
+
+    let out = stripped
+      .replace(/^(네|아니요|아뇨|응|예)[,.\s]+/, '')
+      .replace(/(입니다|이에요|예요|습니다)\.?$/g, '임')
+      .replace(/했어요\.?$/g, '함')
+      .replace(/왔어요\.?$/g, '옴')
+      .replace(/먹고 있어요\.?$/g, '복용 중임')
+      .replace(/잘 먹었고\.?$/g, '식사량 양호함')
+      .trim();
+
+    if (/요[.。]?$/.test(out) && out.length <= 80) {
+      out = out.replace(/요[.。]?$/, '음');
+    }
+
+    return out;
   }
 
   private isLikelyQuestionInsteadOfAnswer(
@@ -997,7 +1062,7 @@ ${lines.join('\n')}`;
     const v = value.trim();
     if (!v) return false;
     const fieldText = this.fieldSearchText(field);
-    if (!/[?？]|습니까|나요|신가요|있으신가요|드릴게요|여쭤/.test(v)) {
+    if (!this.isQuestionLikeSentence(v)) {
       return false;
     }
     if (/시작시기|지속기간|악화요인|완화요인|현병력|주\s*증상|복용중인\s*약|투약/i.test(fieldText)) {

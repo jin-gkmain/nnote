@@ -28,6 +28,7 @@ import {
   buildAiTemplateFieldPayload,
   fetchTemplateUiConfigMap,
   mergeTemplateFieldOverrides,
+  splitTemplateLabel,
   type TemplateFieldEffective,
 } from "@/app/data/template-field-registry";
 import { VoiceTranscriptBlocks } from "@/app/components/voice-transcript-blocks";
@@ -58,6 +59,67 @@ function buildCombinedTextForTemplateFill(
       ? `[공통 추출 정보]\n${JSON.stringify(digest, null, 2)}\n\n`
       : "";
   return `${digestBlock}[음성 STT 원문]\n${transcript}`;
+}
+
+function isTemplateTextField(field: TemplateFieldEffective): boolean {
+  return (
+    field.inputKind === "text_short" ||
+    field.inputKind === "text_long"
+  );
+}
+
+function normalizeDraftTextForReuse(value: string): string {
+  return value
+    .replace(/\s+/g, " ")
+    .replace(/[“”"']/g, "")
+    .trim();
+}
+
+function looksLikeReusableClinicalSentence(value: string): boolean {
+  const normalized = normalizeDraftTextForReuse(value);
+  if (normalized.length < 14) return false;
+  if (/^\d+(?:\.\d+)?$/.test(normalized)) return false;
+  if (/^(있음|없음|해당 없음|예|아니오)$/i.test(normalized)) return false;
+  return /[가-힣A-Za-z]/.test(normalized);
+}
+
+function suppressRepeatedTextFieldValues(
+  fields: TemplateFieldEffective[],
+  values: Record<string, string>,
+): Record<string, string> {
+  const next = { ...values };
+  const used = new Set<string>();
+  for (const field of fields) {
+    if (!isTemplateTextField(field)) continue;
+    const key = field.storageKey;
+    const value = String(next[key] ?? "").trim();
+    if (!looksLikeReusableClinicalSentence(value)) continue;
+    const normalized = normalizeDraftTextForReuse(value);
+    if (used.has(normalized)) {
+      next[key] = "";
+      continue;
+    }
+    used.add(normalized);
+  }
+  return next;
+}
+
+function groupTemplateFieldsBySection(
+  fields: TemplateFieldEffective[],
+): Array<{ section: string; fields: TemplateFieldEffective[] }> {
+  return fields.reduce<Array<{ section: string; fields: TemplateFieldEffective[] }>>(
+    (groups, field) => {
+      const { section } = splitTemplateLabel(field.label);
+      const last = groups[groups.length - 1];
+      if (last && last.section === section) {
+        last.fields.push(field);
+      } else {
+        groups.push({ section, fields: [field] });
+      }
+      return groups;
+    },
+    [],
+  );
 }
 
 async function runWithConcurrencyLimit<T>(
@@ -893,7 +955,10 @@ export default function VoiceRecordPage() {
                   draft[field.storageKey] ?? "",
                 );
               }
-              draftsByTemplateId[tid] = templateValues;
+              draftsByTemplateId[tid] = suppressRepeatedTextFieldValues(
+                merged,
+                templateValues,
+              );
             } catch (err) {
               const msg =
                 err instanceof Error ? err.message : "템플릿 초안 생성에 실패했습니다.";
@@ -1892,53 +1957,67 @@ export default function VoiceRecordPage() {
                   </div>
                 </div>
 
-                <div className="divide-y divide-gray-100">
+                <div className="space-y-5">
                   {activeDraftTemplateIdResolved
-                    ? (
+                    ? groupTemplateFieldsBySection(
                         generatedDraft.fieldsByTemplateId[
                           activeDraftTemplateIdResolved
-                        ] ?? []
-                      ).map((field) => {
-                          const unitSuffix = field.unit?.trim() ? ` (${field.unit})` : "";
-                          const tid = activeDraftTemplateIdResolved;
-                          return (
-                            <div
-                              key={field.storageKey}
-                              className="py-4 first:pt-0 last:pb-0"
-                            >
-                              <label className="mb-1.5 block text-xs font-medium text-gray-600">
-                                {field.label}
-                                {unitSuffix}
-                              </label>
-                              <TemplateFieldControl
-                                field={field}
-                                templateId={tid}
-                                value={
-                                  generatedDraft.draftsByTemplateId[tid]?.[
-                                    field.storageKey
-                                  ] ?? ""
-                                }
-                                onChange={(nextValue) =>
-                                  setGeneratedDraft((prev) =>
-                                    prev && tid
-                                      ? {
-                                          ...prev,
-                                          draftsByTemplateId: {
-                                            ...prev.draftsByTemplateId,
-                                            [tid]: {
-                                              ...(prev.draftsByTemplateId[tid] ?? {}),
-                                              [field.storageKey]: nextValue,
-                                            },
-                                          },
-                                        }
-                                      : prev,
-                                  )
-                                }
-                              />
+                        ] ?? [],
+                      ).map(({ section, fields }) => {
+                        const tid = activeDraftTemplateIdResolved;
+                        return (
+                          <section
+                            key={section}
+                            className="rounded-xl border border-gray-200 bg-gray-50/70 p-3 sm:p-4"
+                          >
+                            <h3 className="mb-3 text-sm font-bold text-gray-800">
+                              {section}
+                            </h3>
+                            <div className="space-y-4">
+                              {fields.map((field) => {
+                                const unitSuffix = field.unit?.trim() ? ` (${field.unit})` : "";
+                                const { field: fieldLabel } = splitTemplateLabel(field.label);
+                                return (
+                                  <div
+                                    key={field.storageKey}
+                                    className="border-t border-gray-200/70 pt-4 first:border-t-0 first:pt-0"
+                                  >
+                                    <label className="mb-1.5 block text-xs font-medium text-gray-600">
+                                      {fieldLabel}
+                                      {unitSuffix}
+                                    </label>
+                                    <TemplateFieldControl
+                                      field={field}
+                                      templateId={tid}
+                                      value={
+                                        generatedDraft.draftsByTemplateId[tid]?.[
+                                          field.storageKey
+                                        ] ?? ""
+                                      }
+                                      onChange={(nextValue) =>
+                                        setGeneratedDraft((prev) =>
+                                          prev && tid
+                                            ? {
+                                                ...prev,
+                                                draftsByTemplateId: {
+                                                  ...prev.draftsByTemplateId,
+                                                  [tid]: {
+                                                    ...(prev.draftsByTemplateId[tid] ?? {}),
+                                                    [field.storageKey]: nextValue,
+                                                  },
+                                                },
+                                              }
+                                            : prev,
+                                        )
+                                      }
+                                    />
+                                  </div>
+                                );
+                              })}
                             </div>
-                          );
-                        },
-                      )
+                          </section>
+                        );
+                      })
                     : null}
                 </div>
               </div>
