@@ -5,10 +5,9 @@ import {
   ChevronLeft,
   ChevronRight,
   ChevronUp,
-  FileUp,
+  FileText,
   Mic,
   Pause,
-  Upload,
 } from "lucide-react";
 import { useAuth } from "@/app/auth/auth-context";
 import SelectVoiceRecordTemplatesModal from "@/app/components/SelectVoiceRecordTemplatesModal";
@@ -22,13 +21,18 @@ import {
   type VoiceRecordTemplateId,
 } from "@/app/data/voiceRecordTemplates";
 import {
+  DEMO_VOICE_SCRIPTS,
+  type DemoVoiceScript,
+} from "@/app/data/demoVoiceScripts";
+import {
   buildAiTemplateFieldPayload,
   fetchTemplateUiConfigMap,
   mergeTemplateFieldOverrides,
+  splitTemplateLabel,
   type TemplateFieldEffective,
 } from "@/app/data/template-field-registry";
 import { VoiceTranscriptBlocks } from "@/app/components/voice-transcript-blocks";
-import type { SttMeta, SttResponse, SttSegment, SttSpeakerSummary } from "@/app/data/ai-api";
+import type { SttMeta, SttSegment, SttSpeakerSummary } from "@/app/data/ai-api";
 import { TemplateFieldControl } from "@/app/components/template-field-control";
 import {
   buildHintContextText,
@@ -55,6 +59,67 @@ function buildCombinedTextForTemplateFill(
       ? `[공통 추출 정보]\n${JSON.stringify(digest, null, 2)}\n\n`
       : "";
   return `${digestBlock}[음성 STT 원문]\n${transcript}`;
+}
+
+function isTemplateTextField(field: TemplateFieldEffective): boolean {
+  return (
+    field.inputKind === "text_short" ||
+    field.inputKind === "text_long"
+  );
+}
+
+function normalizeDraftTextForReuse(value: string): string {
+  return value
+    .replace(/\s+/g, " ")
+    .replace(/[“”"']/g, "")
+    .trim();
+}
+
+function looksLikeReusableClinicalSentence(value: string): boolean {
+  const normalized = normalizeDraftTextForReuse(value);
+  if (normalized.length < 14) return false;
+  if (/^\d+(?:\.\d+)?$/.test(normalized)) return false;
+  if (/^(있음|없음|해당 없음|예|아니오)$/i.test(normalized)) return false;
+  return /[가-힣A-Za-z]/.test(normalized);
+}
+
+function suppressRepeatedTextFieldValues(
+  fields: TemplateFieldEffective[],
+  values: Record<string, string>,
+): Record<string, string> {
+  const next = { ...values };
+  const used = new Set<string>();
+  for (const field of fields) {
+    if (!isTemplateTextField(field)) continue;
+    const key = field.storageKey;
+    const value = String(next[key] ?? "").trim();
+    if (!looksLikeReusableClinicalSentence(value)) continue;
+    const normalized = normalizeDraftTextForReuse(value);
+    if (used.has(normalized)) {
+      next[key] = "";
+      continue;
+    }
+    used.add(normalized);
+  }
+  return next;
+}
+
+function groupTemplateFieldsBySection(
+  fields: TemplateFieldEffective[],
+): Array<{ section: string; fields: TemplateFieldEffective[] }> {
+  return fields.reduce<Array<{ section: string; fields: TemplateFieldEffective[] }>>(
+    (groups, field) => {
+      const { section } = splitTemplateLabel(field.label);
+      const last = groups[groups.length - 1];
+      if (last && last.section === section) {
+        last.fields.push(field);
+      } else {
+        groups.push({ section, fields: [field] });
+      }
+      return groups;
+    },
+    [],
+  );
 }
 
 async function runWithConcurrencyLimit<T>(
@@ -88,18 +153,20 @@ interface GeneratedNursingDraft {
   sttMeta: SttMeta | null;
 }
 
+type GenerationSourceType = "file" | "recording" | "demo_script";
+
 /** 생성 완료 후 파일첨부 자리에 표시하는 메타 */
 interface GenerationMeta {
   fileName: string;
   createdAtIso: string;
-  sourceType: "file" | "recording";
+  sourceType: GenerationSourceType;
   /** 녹음 완료 시에만 초 단위 길이, 파일 업로드 시 null */
   durationSec: number | null;
 }
 
 interface RecordingHistoryItem {
   id: string;
-  sourceType: "file" | "recording";
+  sourceType: GenerationSourceType;
   fileName: string;
   createdAt: string;
   durationSec?: number;
@@ -230,6 +297,72 @@ function textFromWhisperLiveLines(lines: WhisperLiveLine[] | undefined): string 
     .join(" ");
 }
 
+function transcriptFromDemoScript(script: DemoVoiceScript): string {
+  return script.lines.map((line) => `${line.speaker}: ${line.text}`).join("\n");
+}
+
+function previewFromDemoScript(script: DemoVoiceScript): string {
+  return script.lines
+    .slice(0, 2)
+    .map((line) => `${line.speaker}: ${line.text}`)
+    .join(" ");
+}
+
+function estimateDemoLineDurationSec(text: string): number {
+  return Math.max(2, Math.min(8, Math.ceil(text.length / 18)));
+}
+
+function segmentsFromDemoScript(script: DemoVoiceScript): SttSegment[] {
+  let cursor = 0;
+  return script.lines.map((line, index) => {
+    const duration = estimateDemoLineDurationSec(line.text);
+    const startSec = cursor;
+    const endSec = cursor + duration;
+    cursor = endSec;
+    return {
+      id: `${script.id}-${index + 1}`,
+      speaker: line.speaker,
+      speakerLabel: line.speaker,
+      startSec,
+      endSec,
+      text: line.text,
+      words: [],
+    };
+  });
+}
+
+function speakerSummaryFromSegments(segments: SttSegment[]): SttSpeakerSummary[] {
+  const map = new Map<string, SttSpeakerSummary>();
+  for (const segment of segments) {
+    const prev = map.get(segment.speaker) ?? {
+      speaker: segment.speaker,
+      label: segment.speakerLabel,
+      totalSpeechSec: 0,
+      segmentCount: 0,
+    };
+    prev.totalSpeechSec += Math.max(0, segment.endSec - segment.startSec);
+    prev.segmentCount += 1;
+    map.set(segment.speaker, prev);
+  }
+  return [...map.values()];
+}
+
+function demoScriptMeta(script: DemoVoiceScript, segments: SttSegment[]): SttMeta {
+  return {
+    engine: "demo-script",
+    language: "ko-KR",
+    audioDurationSec: segments.at(-1)?.endSec ?? 0,
+    processingMs: 0,
+    modelVersion: script.sourceSheet,
+  };
+}
+
+function generationSourceLabel(sourceType: GenerationSourceType): string {
+  if (sourceType === "recording") return "녹음";
+  if (sourceType === "demo_script") return "데모 스크립트";
+  return "파일";
+}
+
 export default function VoiceRecordPage() {
   const { user, token } = useAuth();
   const [templateModalOpen, setTemplateModalOpen] = useState(false);
@@ -271,7 +404,6 @@ export default function VoiceRecordPage() {
     useState<VoiceRecordTemplateId | null>(null);
   const templatesMapQuery = useTemplatesMapQuery();
 
-  const fileInputRef = useRef<HTMLInputElement>(null);
   const liveTranscriptScrollRef = useRef<HTMLDivElement | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -730,12 +862,18 @@ export default function VoiceRecordPage() {
     [stopLiveSpeechRecognition, stopWhisperLiveKitTranscription],
   );
 
-  const generateDraftFromAudio = useCallback(
-    async (
-      file: File,
-      sourceType: "file" | "recording",
-      durationSec?: number,
-    ) => {
+  const generateDraftFromTranscript = useCallback(
+    async (input: {
+      transcript: string;
+      fileName: string;
+      sourceType: GenerationSourceType;
+      durationSec?: number;
+      sttSegments: SttSegment[];
+      sttSpeakers: SttSpeakerSummary[];
+      sttMeta: SttMeta | null;
+      attachedFile?: File | null;
+      audioUrl?: string | null;
+    }) => {
       const templatesForSession = selectedTemplates.filter((id) =>
         availableTemplates.includes(id),
       ) as VoiceRecordTemplateId[];
@@ -745,33 +883,23 @@ export default function VoiceRecordPage() {
       }
 
       setIsGenerating(true);
-      setGenerationPhase("stt");
+      setGenerationPhase("digest");
       setTemplateFillProgress(null);
       setError("");
-      setAttachedFile(file);
+      setAttachedFile(input.attachedFile ?? null);
       setGeneratedDraft(null);
       setGenerationMeta(null);
       setActiveDraftTemplateId(null);
-
-      let sttResultAfterStt: SttResponse | undefined;
+      if (audioPlaybackUrl) {
+        URL.revokeObjectURL(audioPlaybackUrl);
+      }
+      setAudioPlaybackUrl(input.audioUrl ?? null);
+      setCurrentPlaybackSec(0);
+      setActiveSegmentId(null);
 
       try {
-        const sttResult = await sttMutation.mutateAsync({
-          audio: file,
-          engine: getPreferredSttEngine(),
-        });
-        sttResultAfterStt = sttResult;
-        const transcript = sttResult.text;
-        if (audioPlaybackUrl) {
-          URL.revokeObjectURL(audioPlaybackUrl);
-        }
-        setAudioPlaybackUrl(URL.createObjectURL(file));
-        setCurrentPlaybackSec(0);
-        setActiveSegmentId(null);
-
-        setGenerationPhase("digest");
         const digestRaw = await aiDraftMutation.mutateAsync({
-          text: transcript,
+          text: input.transcript,
           type: "transcript_digest",
         });
         const sharedDigest =
@@ -782,7 +910,10 @@ export default function VoiceRecordPage() {
             ? (digestRaw as Record<string, unknown>)
             : null;
 
-        const combinedBase = buildCombinedTextForTemplateFill(sharedDigest, transcript);
+        const combinedBase = buildCombinedTextForTemplateFill(
+          sharedDigest,
+          input.transcript,
+        );
         const uiMap = await fetchTemplateUiConfigMap();
 
         setGenerationPhase("template_fill");
@@ -803,7 +934,10 @@ export default function VoiceRecordPage() {
             ).filter((f) => !f.hidden);
             fieldsByTemplateId[tid] = merged;
             const templateFields = merged.map((field) => buildAiTemplateFieldPayload(field));
-            const structuredHints = buildStructuredHintsFromTemplate(merged, transcript);
+            const structuredHints = buildStructuredHintsFromTemplate(
+              merged,
+              input.transcript,
+            );
             const hintContext = buildHintContextText(structuredHints);
             const textForFill = hintContext
               ? `${combinedBase}\n\n${hintContext}`
@@ -821,7 +955,10 @@ export default function VoiceRecordPage() {
                   draft[field.storageKey] ?? "",
                 );
               }
-              draftsByTemplateId[tid] = templateValues;
+              draftsByTemplateId[tid] = suppressRepeatedTextFieldValues(
+                merged,
+                templateValues,
+              );
             } catch (err) {
               const msg =
                 err instanceof Error ? err.message : "템플릿 초안 생성에 실패했습니다.";
@@ -846,31 +983,31 @@ export default function VoiceRecordPage() {
           sharedDigest,
           templateFillErrors:
             Object.keys(templateFillErrors).length > 0 ? templateFillErrors : undefined,
-          transcript,
+          transcript: input.transcript,
           generatedAt,
-          sttSegments: sttResult.segments,
-          sttSpeakers: sttResult.speakers,
-          sttMeta: sttResult.meta,
+          sttSegments: input.sttSegments,
+          sttSpeakers: input.sttSpeakers,
+          sttMeta: input.sttMeta,
         });
         setActiveDraftTemplateId(templatesForSession[0] ?? null);
         setGenerationMeta({
-          fileName: file.name,
+          fileName: input.fileName,
           createdAtIso: generatedAt,
-          sourceType,
+          sourceType: input.sourceType,
           durationSec:
-            sourceType === "recording" && typeof durationSec === "number"
-              ? durationSec
+            input.sourceType === "recording" && typeof input.durationSec === "number"
+              ? input.durationSec
               : null,
         });
 
         pushHistory({
-          sourceType,
-          fileName: file.name,
+          sourceType: input.sourceType,
+          fileName: input.fileName,
           createdAt: new Date().toISOString(),
-          durationSec,
+          durationSec: input.durationSec,
           status: "success",
-          transcript,
-          sttSegments: sttResult.segments,
+          transcript: input.transcript,
+          sttSegments: input.sttSegments,
         });
       } catch (e) {
         const message =
@@ -881,14 +1018,14 @@ export default function VoiceRecordPage() {
         setGenerationMeta(null);
         setActiveDraftTemplateId(null);
         pushHistory({
-          sourceType,
-          fileName: file.name,
+          sourceType: input.sourceType,
+          fileName: input.fileName,
           createdAt: new Date().toISOString(),
-          durationSec,
+          durationSec: input.durationSec,
           status: "failed",
           message,
-          transcript: sttResultAfterStt?.text,
-          sttSegments: sttResultAfterStt?.segments,
+          transcript: input.transcript,
+          sttSegments: input.sttSegments,
         });
       } finally {
         setTemplateFillProgress(null);
@@ -901,8 +1038,90 @@ export default function VoiceRecordPage() {
       availableTemplates,
       pushHistory,
       selectedTemplates,
+    ],
+  );
+
+  const generateDraftFromAudio = useCallback(
+    async (
+      file: File,
+      sourceType: "file" | "recording",
+      durationSec?: number,
+    ) => {
+      const templatesForSession = selectedTemplates.filter((id) =>
+        availableTemplates.includes(id),
+      ) as VoiceRecordTemplateId[];
+      if (templatesForSession.length === 0) {
+        setError("템플릿을 하나 이상 선택해 주세요.");
+        return;
+      }
+
+      setIsGenerating(true);
+      setGenerationPhase("stt");
+      setTemplateFillProgress(null);
+      setError("");
+      setAttachedFile(file);
+      setGeneratedDraft(null);
+      setGenerationMeta(null);
+      setActiveDraftTemplateId(null);
+
+      try {
+        const sttResult = await sttMutation.mutateAsync({
+          audio: file,
+          engine: getPreferredSttEngine(),
+        });
+        await generateDraftFromTranscript({
+          transcript: sttResult.text,
+          fileName: file.name,
+          sourceType,
+          durationSec,
+          sttSegments: sttResult.segments,
+          sttSpeakers: sttResult.speakers,
+          sttMeta: sttResult.meta,
+          attachedFile: file,
+          audioUrl: URL.createObjectURL(file),
+        });
+      } catch (e) {
+        const message =
+          e instanceof Error ? e.message : "음성 변환에 실패했습니다.";
+        setError(message);
+        setAttachedFile(null);
+        setGeneratedDraft(null);
+        setGenerationMeta(null);
+        setActiveDraftTemplateId(null);
+        pushHistory({
+          sourceType,
+          fileName: file.name,
+          createdAt: new Date().toISOString(),
+          durationSec,
+          status: "failed",
+          message,
+        });
+        setTemplateFillProgress(null);
+        setIsGenerating(false);
+      }
+    },
+    [
+      availableTemplates,
+      generateDraftFromTranscript,
+      pushHistory,
+      selectedTemplates,
       sttMutation,
     ],
+  );
+
+  const generateDraftFromDemoScript = useCallback(
+    async (script: DemoVoiceScript) => {
+      const segments = segmentsFromDemoScript(script);
+      await generateDraftFromTranscript({
+        transcript: transcriptFromDemoScript(script),
+        fileName: script.title,
+        sourceType: "demo_script",
+        sttSegments: segments,
+        sttSpeakers: speakerSummaryFromSegments(segments),
+        sttMeta: demoScriptMeta(script, segments),
+      });
+    },
+    [generateDraftFromTranscript],
   );
 
   useEffect(() => {
@@ -1481,23 +1700,6 @@ export default function VoiceRecordPage() {
           </button>
         </div>
 
-        <input
-          ref={fileInputRef}
-          type="file"
-          className="sr-only"
-          accept="audio/*,.wav,.webm,.mp3,.m4a,.ogg"
-          onChange={async (e) => {
-            const file = e.target.files?.[0];
-            e.target.value = "";
-            if (!file) return;
-            if (selectedTemplates.length === 0) {
-              setError("템플릿을 하나 이상 선택해 주세요.");
-              return;
-            }
-            await generateDraftFromAudio(file, "file");
-          }}
-        />
-
         {!generatedDraft && inputMode === "record" ? (
           <section className="mb-3 flex flex-col items-center">
             <div className="mt-3 text-[56px] font-bold leading-none tracking-tight text-[#20242C] sm:text-[88px]">
@@ -1544,23 +1746,38 @@ export default function VoiceRecordPage() {
         ) : null}
 
         {!generatedDraft && inputMode === "upload" ? (
-          <section className="mobile-app-card mb-6 flex min-h-[320px] flex-col items-center justify-center px-6 py-10 text-center">
-            <div className="flex h-24 w-24 items-center justify-center rounded-full bg-[#EFF6FF] text-[#3B82F6]">
-              <FileUp className="h-12 w-12" strokeWidth={1.8} />
+          <section className="mb-6">
+            <div className="mb-4">
+              <h2 className="text-xl font-bold text-[#20242C]">데모 스크립트 선택</h2>
+              <p className="mt-2 text-sm leading-6 text-[#6B7280]">
+                선택한 대화 스크립트로 STT 없이 바로 간호기록지 초안을 생성합니다.
+              </p>
             </div>
-            <h2 className="mt-6 text-xl font-bold text-[#20242C]">음성 파일 업로드</h2>
-            <p className="mt-2 text-sm leading-6 text-[#6B7280]">
-              녹음 파일을 업로드하면 한 번에 STT를 진행하고 선택한 서식의 초안을 생성합니다.
-            </p>
-            <button
-              type="button"
-              disabled={!canStartVoiceCapture || isGenerating}
-              onClick={() => fileInputRef.current?.click()}
-              className="mt-8 inline-flex h-12 items-center justify-center gap-2 rounded-lg bg-[#3B82F6] px-6 text-sm font-bold text-white shadow-sm hover:bg-[#2563EB] disabled:bg-gray-300"
-            >
-              <Upload className="h-4 w-4" strokeWidth={2} />
-              파일 선택
-            </button>
+            <div className="grid gap-3 md:grid-cols-2">
+              {DEMO_VOICE_SCRIPTS.map((script) => (
+                <button
+                  key={script.id}
+                  type="button"
+                  disabled={!canStartVoiceCapture || isGenerating}
+                  onClick={() => generateDraftFromDemoScript(script)}
+                  className="mobile-app-card min-h-[132px] p-4 text-left transition hover:border-[#93C5FD] hover:bg-[#F8FBFF] disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <div className="flex items-start gap-3">
+                    <span className="mt-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-[#EFF6FF] text-[#3B82F6]">
+                      <FileText className="h-5 w-5" strokeWidth={1.9} />
+                    </span>
+                    <span className="min-w-0">
+                      <span className="block text-sm font-bold text-[#20242C]">
+                        {script.title}
+                      </span>
+                      <span className="mt-1 line-clamp-3 block text-xs leading-5 text-[#6B7280]">
+                        {previewFromDemoScript(script)}
+                      </span>
+                    </span>
+                  </div>
+                </button>
+              ))}
+            </div>
           </section>
         ) : null}
 
@@ -1740,60 +1957,74 @@ export default function VoiceRecordPage() {
                   </div>
                 </div>
 
-                <div className="divide-y divide-gray-100">
+                <div className="space-y-5">
                   {activeDraftTemplateIdResolved
-                    ? (
+                    ? groupTemplateFieldsBySection(
                         generatedDraft.fieldsByTemplateId[
                           activeDraftTemplateIdResolved
-                        ] ?? []
-                      ).map((field) => {
-                          const unitSuffix = field.unit?.trim() ? ` (${field.unit})` : "";
-                          const tid = activeDraftTemplateIdResolved;
-                          return (
-                            <div
-                              key={field.storageKey}
-                              className="py-4 first:pt-0 last:pb-0"
-                            >
-                              <label className="mb-1.5 block text-xs font-medium text-gray-600">
-                                {field.label}
-                                {unitSuffix}
-                              </label>
-                              <TemplateFieldControl
-                                field={field}
-                                templateId={tid}
-                                value={
-                                  generatedDraft.draftsByTemplateId[tid]?.[
-                                    field.storageKey
-                                  ] ?? ""
-                                }
-                                onChange={(nextValue) =>
-                                  setGeneratedDraft((prev) =>
-                                    prev && tid
-                                      ? {
-                                          ...prev,
-                                          draftsByTemplateId: {
-                                            ...prev.draftsByTemplateId,
-                                            [tid]: {
-                                              ...(prev.draftsByTemplateId[tid] ?? {}),
-                                              [field.storageKey]: nextValue,
-                                            },
-                                          },
-                                        }
-                                      : prev,
-                                  )
-                                }
-                              />
+                        ] ?? [],
+                      ).map(({ section, fields }) => {
+                        const tid = activeDraftTemplateIdResolved;
+                        return (
+                          <section
+                            key={section}
+                            className="rounded-xl border border-gray-200 bg-gray-50/70 p-3 sm:p-4"
+                          >
+                            <h3 className="mb-3 text-sm font-bold text-gray-800">
+                              {section}
+                            </h3>
+                            <div className="space-y-4">
+                              {fields.map((field) => {
+                                const unitSuffix = field.unit?.trim() ? ` (${field.unit})` : "";
+                                const { field: fieldLabel } = splitTemplateLabel(field.label);
+                                return (
+                                  <div
+                                    key={field.storageKey}
+                                    className="border-t border-gray-200/70 pt-4 first:border-t-0 first:pt-0"
+                                  >
+                                    <label className="mb-1.5 block text-xs font-medium text-gray-600">
+                                      {fieldLabel}
+                                      {unitSuffix}
+                                    </label>
+                                    <TemplateFieldControl
+                                      field={field}
+                                      templateId={tid}
+                                      value={
+                                        generatedDraft.draftsByTemplateId[tid]?.[
+                                          field.storageKey
+                                        ] ?? ""
+                                      }
+                                      onChange={(nextValue) =>
+                                        setGeneratedDraft((prev) =>
+                                          prev && tid
+                                            ? {
+                                                ...prev,
+                                                draftsByTemplateId: {
+                                                  ...prev.draftsByTemplateId,
+                                                  [tid]: {
+                                                    ...(prev.draftsByTemplateId[tid] ?? {}),
+                                                    [field.storageKey]: nextValue,
+                                                  },
+                                                },
+                                              }
+                                            : prev,
+                                        )
+                                      }
+                                    />
+                                  </div>
+                                );
+                              })}
                             </div>
-                          );
-                        },
-                      )
+                          </section>
+                        );
+                      })
                     : null}
                 </div>
               </div>
               ) : null}
             </div>
 
-            {generationMeta && audioPlaybackUrl ? (
+            {generationMeta && generatedDraft.sttSegments.length > 0 ? (
               <aside className="mobile-app-card min-h-0 p-4 lg:col-span-1 lg:max-h-[min(100vh,800px)] lg:overflow-y-auto lg:overscroll-contain">
               <div className="mb-3">
                 <p
@@ -1803,30 +2034,37 @@ export default function VoiceRecordPage() {
                   {stripFileExtension(generationMeta.fileName)}
                 </p>
                 <p className="mt-0.5 text-[11px] text-gray-500">
-                  {generationMeta.sourceType === "recording" ? "녹음" : "파일"} ·{" "}
+                  {generationSourceLabel(generationMeta.sourceType)} ·{" "}
                   {formatDateTime(generationMeta.createdAtIso)}
                 </p>
               </div>
-              <audio
-                ref={audioRef}
-                controls
-                src={audioPlaybackUrl}
-                className="w-full"
-                onTimeUpdate={(event) => {
-                  setCurrentPlaybackSec(Number(event.currentTarget.currentTime));
-                }}
-              />
+              {audioPlaybackUrl ? (
+                <audio
+                  ref={audioRef}
+                  controls
+                  src={audioPlaybackUrl}
+                  className="w-full"
+                  onTimeUpdate={(event) => {
+                    setCurrentPlaybackSec(Number(event.currentTarget.currentTime));
+                  }}
+                />
+              ) : null}
               <div className="mt-3">
                 <VoiceTranscriptBlocks
                   segments={generatedDraft.sttSegments}
                   activeSegmentId={activeSegmentId}
                   onSelectSegment={(segment) => {
-                    if (!audioRef.current) return;
+                    if (!audioRef.current) {
+                      setActiveSegmentId(segment.id);
+                      return;
+                    }
                     audioRef.current.currentTime = segment.startSec;
                     setCurrentPlaybackSec(segment.startSec);
                     setActiveSegmentId(segment.id);
                   }}
-                  className="space-y-1.5 lg:max-h-[calc(100vh-22rem)] lg:overflow-y-auto lg:pr-1"
+                  className={`space-y-1.5 lg:overflow-y-auto lg:pr-1 ${
+                    audioPlaybackUrl ? "lg:max-h-[calc(100vh-22rem)]" : "lg:max-h-[calc(100vh-17rem)]"
+                  }`}
                 />
               </div>
               </aside>

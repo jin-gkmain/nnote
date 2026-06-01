@@ -53,7 +53,7 @@ export function TemplateFieldControl({
         }}
         className={classNameInputShort}
       >
-        <option value={BOOLEAN_FIELD_EMPTY}>— (공백)</option>
+        <option value={BOOLEAN_FIELD_EMPTY}>— (선택)</option>
         <option value={BOOLEAN_FIELD_YES}>예 (YES)</option>
         <option value={BOOLEAN_FIELD_NO}>아니오 (NO)</option>
       </select>
@@ -138,8 +138,8 @@ export function TemplateFieldControl({
     const selectedAllowsFreeText = entries.some(
       ([optKey, _label, allowFreeText]) => allowFreeText && optKey === selectVal,
     );
-    return (
-      <div className="space-y-2">
+    const control =
+      entries.length <= 3 ? (
         <select
           disabled={readOnly || entries.length === 0}
           value={selectVal}
@@ -159,6 +159,33 @@ export function TemplateFieldControl({
             </option>
           ))}
         </select>
+      ) : (
+        <div className="grid gap-2 rounded-lg border border-gray-200 bg-white p-2 sm:grid-cols-2">
+          {entries.map(([optKey, label, allowFreeText]) => (
+            <label
+              key={optKey}
+              className="flex min-h-10 cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-sm text-gray-900 hover:bg-gray-50"
+            >
+              <input
+                type="radio"
+                disabled={readOnly}
+                checked={selectVal === optKey}
+                onChange={() => {
+                  onChange(allowFreeText ? serializeSingleSelectValue(optKey, "") : optKey);
+                }}
+                className="h-4 w-4 border-gray-300 text-blue-600"
+              />
+              <span className="min-w-0 break-words">{label || optKey}</span>
+            </label>
+          ))}
+          {entries.length === 0 ? (
+            <span className="text-xs text-gray-500">선택지가 없습니다.</span>
+          ) : null}
+        </div>
+      );
+    return (
+      <div className="space-y-2">
+        {control}
         {selectedAllowsFreeText ? (
           <InputAssistField
             templateId={templateId}

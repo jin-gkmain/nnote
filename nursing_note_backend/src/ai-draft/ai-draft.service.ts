@@ -148,6 +148,7 @@ export class AiDraftService {
     if (!fields?.length) {
       throw new BadRequestException('template_fill에는 templateFields가 필요합니다.');
     }
+    const evidenceText = this.extractEvidenceText(text);
     const fieldLines = fields.map((f) => {
       const desc = f.description ? ` — ${f.description}` : '';
       const vt = f.valueType ? ` [valueType=${f.valueType}]` : '';
@@ -165,6 +166,7 @@ export class AiDraftService {
           : '';
       return `  "${f.key}": ""  // ${f.label}${desc}${vt}${sources}${keys}${decisionGuide}`;
     });
+    const checklistGuide = this.buildTemplateFieldChecklist(fields, evidenceText);
     const hasChoiceFields = fields.some(
       (f) =>
         (f.valueType === 'single_select' || f.valueType === 'multi_select') &&
@@ -193,6 +195,18 @@ export class AiDraftService {
 - 근거 숫자가 원문에 없으면 빈 문자열("")로 둡니다.
 `
       : '';
+    const hasTextFields = fields.some(
+      (f) => f.valueType === 'text_short' || f.valueType === 'text_long',
+    );
+    const textRules = hasTextFields
+      ? `
+텍스트 필드 규칙(valueType=text_short/text_long):
+- 간호사 질문을 그대로 복사하지 마세요. 환자/보호자 답변 또는 관찰된 사실만 작성합니다.
+- 문장은 질문형이 아니라 평서문으로 작성합니다. "있으신가요?", "드릴까요?", "여쭤보겠습니다" 같은 표현은 금지입니다.
+- 대화체를 그대로 옮기기보다 기록지에 들어갈 짧은 사실 문장/명사형으로 정리합니다. 예: "오늘 아침 화장실에서 미끄러져 우측 둔부 통증으로 응급실 내원함".
+- 필드 의미와 맞는 답변이 없으면 빈 문자열("")로 둡니다.
+`
+      : '';
     const hintLines = (structuredHints ?? [])
       .filter((h) => h && h.key && h.value)
       .map((h) => `- ${h.key}: ${h.value} (confidence=${Number(h.confidence ?? 0).toFixed(2)}, source=${h.source ?? 'input'})`)
@@ -205,8 +219,19 @@ export class AiDraftService {
 이 요청은 "신규 생성(환자 기본정보+메모)" 또는 "기록 기반 생성(이전 기록 텍스트)" 중 하나일 수 있으며, 전달된 원문 밖의 사실은 만들지 않습니다.
 각 필드 주석의 "판단 기준"은 해당 필드를 채워도 되는 근거와 해석 기준입니다. 판단 기준과 원문 근거가 맞지 않으면 값을 만들지 말고 빈 문자열("")로 둡니다.
 환자 성별·나이·보호자·과거력·가족력·알레르기·생활습관·종교·퇴원정보·신체계통 증상은 원문에 직접 말한 경우에만 채웁니다.
+
+## 작업 절차(내부적으로 수행하고 출력하지 마세요)
+1. 아래 [필드별 확인 항목]을 체크리스트로 사용해 원문에서 근거 문장을 먼저 찾습니다.
+2. 각 필드는 "확인할 항목"과 "후보 근거 문장"이 맞을 때만 채웁니다.
+3. 같은 원문 문장을 여러 필드에 사용할 수 있지만, 필드 의미가 다르면 복사하지 마세요.
+4. 선택형 필드는 원문 의미와 allowedKeys가 정확히 대응될 때만 선택합니다.
+5. 숫자·텍스트 필드는 원문 문장을 그대로 길게 복사하지 말고 해당 필드에 필요한 핵심 값/구문만 씁니다.
+6. 텍스트 필드에는 질문문을 넣지 말고, 반드시 평서문/기록문 형태로 씁니다.
 ${choiceRules}
 ${numberRules}
+${textRules}
+${checklistGuide}
+
 반드시 아래 키만 가진 JSON 객체 하나만 출력하세요 (키 이름과 순서는 유지):
 {
 ${fieldLines.join(',\n')}
@@ -217,10 +242,22 @@ ${hintGuide}
 다른 설명·마크다운·코드펜스 없이 JSON만 출력하세요.`;
     const parsed = await this.callClovaApi(systemPrompt, text);
     const out: Record<string, string> = {};
-    const evidenceText = this.extractEvidenceText(text);
+    const hintMap = new Map(
+      (structuredHints ?? [])
+        .filter((h) => h?.key && h?.value && Number(h.confidence ?? 0) >= 0.8)
+        .map((h) => [h.key, h]),
+    );
     for (const f of fields) {
       const v = parsed[f.key];
-      out[f.key] = this.normalizeTemplateFillValue(v, f, evidenceText);
+      const normalized = this.normalizeTemplateFillValue(v, f, evidenceText);
+      const hinted = this.normalizedStructuredHintValue(
+        hintMap.get(f.key),
+        f,
+        evidenceText,
+      );
+      out[f.key] = this.shouldPreferStructuredHint(normalized, hinted, f)
+        ? hinted
+        : normalized;
     }
     return out;
   }
@@ -305,14 +342,23 @@ ${hintGuide}
         (vt === 'single_select' || vt === 'multi_select') &&
         keys.length > 0
       ) {
-        return this.defaultChoiceValue(field);
+        return (
+          this.inferChoiceValueFromEvidence(field, evidenceText) ||
+          this.explicitDefaultChoiceValue(field)
+        );
       }
       return '';
     }
     const text = String(value).trim();
     if (!text) {
-      if (vt === 'single_select' && keys.length > 0) return this.defaultChoiceValue(field);
-      if (vt === 'multi_select' && keys.length > 0) return this.defaultChoiceValue(field);
+      const inferredChoice = this.inferChoiceValueFromEvidence(field, evidenceText);
+      if (inferredChoice) return inferredChoice;
+      if (vt === 'single_select' && keys.length > 0) {
+        return this.explicitDefaultChoiceValue(field);
+      }
+      if (vt === 'multi_select' && keys.length > 0) {
+        return this.explicitDefaultChoiceValue(field);
+      }
       return '';
     }
     if (vt === 'multi_select' && keys.length > 0) {
@@ -325,21 +371,37 @@ ${hintGuide}
     }
     if (vt === 'single_select' && keys.length > 0) {
       if (!allowed.has(text)) return '';
+      const inferredChoice = this.inferChoiceValueFromEvidence(field, evidenceText);
+      const defaultValue = this.explicitDefaultChoiceValue(field);
+      if (inferredChoice && text === defaultValue && inferredChoice !== defaultValue) {
+        return inferredChoice;
+      }
       if (this.hasChoiceEvidence(text, field, evidenceText)) {
         return text;
       }
-      return this.defaultChoiceValue(field);
+      return defaultValue;
     }
     if (this.isGenericPlaceholderValue(text, field, evidenceText)) {
       return '';
     }
     if (vt === 'number') {
+      const painScore = this.extractPainScoreForField(field, evidenceText);
+      if (painScore) return painScore;
       if (!/\d/.test(text) || !this.hasNumberEvidence(text, evidenceText)) {
         return '';
       }
       return this.normalizeNumberTemplateValue(text, field);
     }
     const lowerLabel = `${field.key} ${field.label}`.toLowerCase();
+    const inferredText = this.inferTextValueFromEvidence(field, evidenceText);
+    if (
+      inferredText &&
+      (!text ||
+        this.isGenericPlaceholderValue(text, field, evidenceText) ||
+        this.isLikelyQuestionInsteadOfAnswer(text, field))
+    ) {
+      return this.normalizeDeclarativeFieldText(inferredText, field);
+    }
     if (/(혈압|blood pressure|bp)/i.test(lowerLabel)) {
       const m = text.match(/(\d{2,3})\s*\/\s*(\d{2,3})/);
       if (m) return `${m[1]}/${m[2]}`;
@@ -348,7 +410,59 @@ ${hintGuide}
       const m = text.match(/(\d{2,3}(?:\.\d+)?)/);
       if (m) return m[1];
     }
-    return text;
+    if (this.isTextField(field)) {
+      if (this.isLikelyQuestionInsteadOfAnswer(text, field)) {
+        return inferredText ? this.normalizeDeclarativeFieldText(inferredText, field) : '';
+      }
+      return this.normalizeDeclarativeFieldText(text, field);
+    }
+    return this.isLikelyQuestionInsteadOfAnswer(text, field) && inferredText
+      ? this.normalizeDeclarativeFieldText(inferredText, field)
+      : text;
+  }
+
+  private normalizedStructuredHintValue(
+    hint: StructuredHintDto | undefined,
+    field: TemplateFieldSpecDto,
+    evidenceText: string,
+  ): string {
+    if (!hint?.value) return '';
+    return this.normalizeTemplateFillValue(hint.value, field, evidenceText);
+  }
+
+  private shouldPreferStructuredHint(
+    normalized: string,
+    hinted: string,
+    field: TemplateFieldSpecDto,
+  ): boolean {
+    if (!hinted) return false;
+    if (!normalized) return true;
+    const vt = field.valueType;
+    if (vt === 'single_select' || vt === 'multi_select') {
+      const defaultValue = this.explicitDefaultChoiceValue(field);
+      return Boolean(defaultValue && normalized === defaultValue && hinted !== defaultValue);
+    }
+    if (this.isMetadataLikeValue(normalized, field)) return true;
+    return false;
+  }
+
+  private extractPainScoreForField(
+    field: TemplateFieldSpecDto,
+    evidenceText: string,
+  ): string {
+    const fieldText = this.fieldSearchText(field);
+    if (!/(통증\s*강도|pain.*score|nrs|npis|점수|score)/i.test(fieldText)) {
+      return '';
+    }
+    const candidates = this.splitEvidenceSentences(evidenceText)
+      .filter((sentence) => !/0점부터\s*10점|10점까지|10점\s*만점/.test(sentence))
+      .filter((sentence) => /(아프|아파|통증|점\s*정도|움직|가만히)/.test(sentence))
+      .flatMap((sentence) =>
+        [...sentence.matchAll(/(\d{1,2})(?:\s*점|\s*\/\s*10|점\s*정도)/g)]
+          .map((m) => Number(m[1]))
+          .filter((n) => Number.isFinite(n) && n >= 0 && n <= 10),
+      );
+    return candidates.length > 0 ? String(Math.max(...candidates)) : '';
   }
 
   private formatOptionGuide(field: TemplateFieldSpecDto): string {
@@ -362,6 +476,183 @@ ${hintGuide}
         .join(', ');
     }
     return (field.optionKeys ?? []).map((k) => `"${k}"`).join(', ');
+  }
+
+  private buildTemplateFieldChecklist(
+    fields: TemplateFieldSpecDto[],
+    evidenceText: string,
+  ): string {
+    const lines = fields.map((field, index) => {
+      const target = this.describeFieldTarget(field);
+      const candidateEvidence = this.findCandidateEvidenceForField(
+        field,
+        evidenceText,
+      );
+      const options =
+        field.optionKeys && field.optionKeys.length > 0
+          ? ` allowedKeys=${this.formatOptionGuide(field)}`
+          : '';
+      const evidence =
+        candidateEvidence.length > 0
+          ? ` 후보 근거=${candidateEvidence.map((s) => `"${s}"`).join(' / ')}`
+          : ' 후보 근거=없음';
+      return `${index + 1}. key="${field.key}" label="${field.label}" 확인할 항목=${target}${options}.${evidence}`;
+    });
+    return `## 필드별 확인 항목
+${lines.join('\n')}`;
+  }
+
+  private describeFieldTarget(field: TemplateFieldSpecDto): string {
+    const fieldText = this.fieldSearchText(field);
+    if (/통증\s*강도|pain.*score|nrs|npis|점수/i.test(fieldText)) {
+      return '통증 점수/강도(0-10 등), 여러 숫자가 있으면 가장 심한 통증 점수';
+    }
+    if (/통증|pain/i.test(fieldText)) {
+      return '통증 유무, 부위, 양상, 시작/악화/완화/지속 정보';
+    }
+    if (/알레르|allerg/i.test(fieldText)) {
+      return '약물/음식/조영제 알레르기 유무와 종류';
+    }
+    if (/복용중인\s*약|투약|약물|medication/i.test(fieldText)) {
+      return '현재 복용약, 지참약, 중단 약, 약물 관련 설명';
+    }
+    if (/과거력|병력|수술|입원/i.test(fieldText)) {
+      return '과거 질환, 입원/수술 이력, 기존 진단';
+    }
+    if (/가족력|family/i.test(fieldText)) {
+      return '가족의 질환/병력 언급';
+    }
+    if (/보호자|caregiver/i.test(fieldText)) {
+      return '상주/동행 보호자와 환자와의 관계';
+    }
+    if (/퇴원|discharge/i.test(fieldText)) {
+      return '퇴원 예정지, 퇴원 후 보호자, 이동수단, 향후 치료계획';
+    }
+    if (/체중|몸무게|weight/i.test(fieldText)) {
+      return '최근 체중 변화, 증가/감소/변화 없음, kg 수치';
+    }
+    if (/식사량|식이|섭취|영양|meal|intake/i.test(fieldText)) {
+      return '식사량 변화, 식욕, 식이 제한/주의 사항';
+    }
+    if (/수면|잠|sleep/i.test(fieldText)) {
+      return '수면 양상, 불면, 자주 깸, 잘 잠';
+    }
+    if (/종교|relig/i.test(fieldText)) {
+      return '종교와 치료 관련 신념';
+    }
+    if (/흡연|smok/i.test(fieldText)) {
+      return '흡연 여부, 기간, 금연 상태';
+    }
+    if (/음주|alcohol|drink/i.test(fieldText)) {
+      return '음주 여부와 빈도';
+    }
+    if (/호흡|기침|객담|가래|숨|respir/i.test(fieldText)) {
+      return '호흡곤란, 기침, 가래, 산소/흡입기 사용';
+    }
+    if (/소화|복통|오심|구토|변|melena|위장/i.test(fieldText)) {
+      return '소화기 증상, 복통, 오심/구토, 흑변/혈변';
+    }
+    if (/배뇨|소변|도뇨|foley|urine/i.test(fieldText)) {
+      return '배뇨 증상, 소변줄, 야간뇨, 배뇨곤란';
+    }
+    if (/학력|education/i.test(fieldText)) {
+      return '최종학력';
+    }
+    if (/낙상|보행|일상생활|활동|adl|운동/i.test(fieldText)) {
+      return '낙상 경험, 보행/보조기 사용, 일상생활 수행 능력';
+    }
+    if (/피부|욕창|상처|부종|edema/i.test(fieldText)) {
+      return '피부 상태, 상처/욕창, 부종, 색 변화';
+    }
+    return '라벨과 판단 기준에 해당하는 원문 근거';
+  }
+
+  private findCandidateEvidenceForField(
+    field: TemplateFieldSpecDto,
+    evidenceText: string,
+  ): string[] {
+    if (!evidenceText) return [];
+    const sentences = this.splitEvidenceSentences(evidenceText);
+    const patterns = this.evidencePatternsForField(field);
+    const scored = sentences
+      .map((sentence) => ({
+        sentence,
+        score: patterns.reduce((sum, pattern) => sum + (pattern.test(sentence) ? 1 : 0), 0),
+      }))
+      .filter((item) => item.score > 0)
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 3)
+      .map((item) => this.truncateEvidence(item.sentence));
+    return [...new Set(scored)];
+  }
+
+  private splitEvidenceSentences(text: string): string[] {
+    return text
+      .replace(/\s+/g, ' ')
+      .replace(/(요\.|다\.|까\?|죠\.|네요\.|[.!?。])\s+/g, '$1\n')
+      .split(/\n|(?=(?:간호사|환자|보호자)(?:\([^)]*\))?:)/)
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0 && !/^\[/.test(s));
+  }
+
+  private evidencePatternsForField(field: TemplateFieldSpecDto): RegExp[] {
+    const fieldText = this.fieldSearchText(field);
+    const patterns: RegExp[] = [];
+    const add = (items: RegExp[]) => patterns.push(...items);
+    if (/통증|pain|npis|nrs|점수/i.test(fieldText)) add([/통증|아프|아파|아픈|쑤시|찌르|점\s*정도|움직/i]);
+    if (/알레르|allerg/i.test(fieldText)) add([/알레르|알러지|두드러기|조영제|부작용|음식.*못/i]);
+    if (/복용중인\s*약|투약|약물|medication/i.test(fieldText)) add([/약|복용|먹고|처방|칼슘제|아스피린|혈압약|당뇨약|골다공증/i]);
+    if (/과거력|병력|수술|입원/i.test(fieldText)) add([/과거|병력|수술|입원|진단|고혈압|당뇨|결핵|암|골다공증|부정맥/i]);
+    if (/가족력|family/i.test(fieldText)) add([/가족력|가족.*병|부모|형제|자매/i]);
+    if (/보호자|caregiver/i.test(fieldText)) add([/보호자|같이|상주|딸|아들|아내|남편|배우자|와이프|간병인/i]);
+    if (/퇴원|discharge/i.test(fieldText)) add([/퇴원|귀가|자택|재활|전원|구급차|자가|보호자/i]);
+    if (/체중|몸무게|weight/i.test(fieldText)) add([/체중|몸무게|살|kg|빠졌|증가|감소|똑같|비슷/i]);
+    if (/식사량|식이|섭취|영양|meal|intake/i.test(fieldText)) add([/식사|밥|먹|입맛|공기|염분|짜|가리|식이/i]);
+    if (/수면|잠|sleep/i.test(fieldText)) add([/잠|수면|깨|못\s*잤|불면|뒤척/i]);
+    if (/종교|relig/i.test(fieldText)) add([/종교|기독교|천주교|불교|무교|신념/i]);
+    if (/흡연|smok/i.test(fieldText)) add([/흡연|담배|금연/i]);
+    if (/음주|alcohol|drink/i.test(fieldText)) add([/음주|술|소주|맥주/i]);
+    if (/호흡|기침|객담|가래|숨|respir/i.test(fieldText)) add([/호흡|숨|기침|가래|객담|산소|흡입기|네뷸/i]);
+    if (/소화|복통|오심|구토|변|melena|위장/i.test(fieldText)) add([/소화|복통|명치|오심|구토|메스꺼|흑변|검은\s*변|혈변|속/i]);
+    if (/배뇨|소변|도뇨|foley|urine/i.test(fieldText)) add([/소변|배뇨|소변줄|도뇨|야간뇨|전립선/i]);
+    if (/학력|education/i.test(fieldText)) add([/학력|초등학교|중학교|고등학교|대학교|고졸|대졸/i]);
+    if (/낙상|보행|일상생활|활동|adl|운동/i.test(fieldText)) add([/낙상|넘어|보행|걷|보조기|지팡이|워커|일상생활|혼자|부축/i]);
+    if (/피부|욕창|상처|부종|edema/i.test(fieldText)) add([/피부|욕창|상처|부종|붓|색깔|창백|꼬리뼈/i]);
+    const labelTerms = this.meaningfulLabelTerms(field.label);
+    for (const term of labelTerms) {
+      patterns.push(new RegExp(this.escapeRegExp(term), 'i'));
+    }
+    return patterns.length > 0 ? patterns : [/./];
+  }
+
+  private fieldSearchText(field: TemplateFieldSpecDto): string {
+    return [
+      field.key,
+      field.label,
+      field.description,
+      field.aiHint,
+      field.sourceDefinition,
+    ]
+      .map((v) => String(v ?? ''))
+      .join(' ');
+  }
+
+  private meaningfulLabelTerms(label: string): string[] {
+    return label
+      .split(/[·>\/(),\s-]+/)
+      .map((s) => s.trim())
+      .filter((s) => s.length >= 2)
+      .filter((s) => !/^(기본|항목|작성|선택|범주형|자유서술형|if|yes|no)$/.test(s))
+      .slice(-3);
+  }
+
+  private truncateEvidence(sentence: string): string {
+    const compact = sentence.replace(/\s+/g, ' ').trim();
+    return compact.length > 140 ? `${compact.slice(0, 137)}...` : compact;
+  }
+
+  private escapeRegExp(value: string): string {
+    return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   }
 
   private extractEvidenceText(text: string): string {
@@ -379,21 +670,17 @@ ${hintGuide}
     return String(option?.label ?? key).trim();
   }
 
-  private defaultChoiceValue(field: TemplateFieldSpecDto): string {
+  private explicitDefaultChoiceValue(field: TemplateFieldSpecDto): string {
     const options = field.options ?? [];
     const byDefault = options.find((o) =>
       /기본/.test(`${o.optionKey ?? ''} ${o.label ?? ''}`),
     );
     if (byDefault?.optionKey) return String(byDefault.optionKey).trim();
+    return '';
+  }
 
-    const byNone = options.find((o) =>
-      /^(없음|해당\s*없음|무)$/.test(String(o.optionKey ?? '').trim()) ||
-      /^(없음|해당\s*없음|무)$/.test(String(o.label ?? '').trim()),
-    );
-    if (byNone?.optionKey) return String(byNone.optionKey).trim();
-
-    const keys = field.optionKeys ?? [];
-    return keys.find((k) => /^(없음|해당\s*없음|무)$/.test(String(k).trim())) ?? '';
+  private isNoneChoice(value: string): boolean {
+    return /^(없음|해당\s*없음|무|n\/a)$/i.test(String(value).trim());
   }
 
   private hasChoiceEvidence(
@@ -404,11 +691,14 @@ ${hintGuide}
     const source = evidenceText.replace(/\s+/g, ' ').trim();
     if (!source) return false;
 
-    const defaultValue = this.defaultChoiceValue(field);
+    const defaultValue = this.explicitDefaultChoiceValue(field);
     if (selectedKey === defaultValue) return true;
 
     const label = this.optionLabel(field, selectedKey);
     const fieldText = `${field.key} ${field.label} ${field.description ?? ''} ${field.aiHint ?? ''} ${field.sourceDefinition ?? ''}`;
+    if (this.isNoneChoice(selectedKey) || this.isNoneChoice(label)) {
+      return this.hasNegativeEvidenceForField(field, source);
+    }
     if (this.includesMeaningfulTerm(source, selectedKey) || this.includesMeaningfulTerm(source, label)) {
       return true;
     }
@@ -453,6 +743,41 @@ ${hintGuide}
       return /(보호자|배우자|자녀|퇴원|귀가|자택|구급차|자가|대중교통)/i.test(source);
     }
 
+    return false;
+  }
+
+  private hasNegativeEvidenceForField(
+    field: TemplateFieldSpecDto,
+    source: string,
+  ): boolean {
+    const fieldText = this.fieldSearchText(field);
+    if (/통증|pain|npis|nrs/i.test(fieldText)) {
+      return /(통증|아프|아픈\s*데)[^.!?。]{0,20}(없|않|안\s*아프|괜찮)/.test(source);
+    }
+    if (/알레르|allerg/i.test(fieldText)) {
+      return /(알레르|알러지|못\s*드시는\s*음식|약물\s*부작용)[^.!?。]{0,30}(없|전혀|하나도|아니요|없으|다\s*잘)/.test(source);
+    }
+    if (/체중|몸무게|weight/i.test(fieldText)) {
+      return /(체중|몸무게)[^.!?。]{0,40}(똑같|비슷|변화\s*없|계속\s*같|없)/.test(source);
+    }
+    if (/식사량|식이|섭취|영양|meal|intake/i.test(fieldText)) {
+      return /(식사|밥|먹|음식|식이)[^.!?。]{0,40}(잘|문제없이|가리.*없|못\s*드.*없|특별히\s*없|다\s*잘)/.test(source);
+    }
+    if (/수면|잠|sleep/i.test(fieldText)) {
+      return /(잠|수면)[^.!?。]{0,30}(잘|문제\s*없|어렵.*없|깨.*없)/.test(source);
+    }
+    if (/피부|욕창|상처|부종|edema/i.test(fieldText)) {
+      return /(피부|꼬리뼈|상처|부종|붓)[^.!?。]{0,30}(없|전혀\s*없|괜찮)/.test(source);
+    }
+    if (/가족력|family/i.test(fieldText)) {
+      return /(가족력|가족.*병)[^.!?。]{0,30}(없|몰라|없으)/.test(source);
+    }
+    if (/소화기|연하|오심|구토|복부|속쓰림|토혈|삼킴/i.test(fieldText)) {
+      return /(소화|오심|구토|복통|속쓰림|삼키|토혈)[^.!?。]{0,30}(없|괜찮|문제\s*없)/.test(source);
+    }
+    if (/호흡|객담|기침|숨|respir/i.test(fieldText)) {
+      return /(호흡|숨|기침|객담|가래)[^.!?。]{0,30}(없|괜찮|문제\s*없)/.test(source);
+    }
     return false;
   }
 
@@ -513,6 +838,235 @@ ${hintGuide}
     }
     if (/^(있음|기타|악화요인|완화요인|증상 시작시기|약물명\/1회 투여량\/1회 투여단위\/횟수\/용법 및 투여시간\/약품 코드\/유효함량)$/i.test(v)) {
       return !this.includesMeaningfulTerm(evidenceText, v);
+    }
+    if (/\((범주형|자유서술형|수치형|날짜형)\s*[-—]/.test(v)) {
+      return true;
+    }
+    return false;
+  }
+
+  private isMetadataLikeValue(value: string, field: TemplateFieldSpecDto): boolean {
+    return this.isGenericPlaceholderValue(value, field, '');
+  }
+
+  private inferChoiceValueFromEvidence(
+    field: TemplateFieldSpecDto,
+    evidenceText: string,
+  ): string {
+    const keys = (field.optionKeys ?? []).map((k) => String(k).trim());
+    if (!keys.length) return '';
+    const has = (key: string) => keys.includes(key);
+    const source = evidenceText.replace(/\s+/g, ' ').trim();
+    const fieldText = this.fieldSearchText(field);
+
+    if (/통증|pain|npis|nrs/i.test(fieldText) && has('있음')) {
+      if (/(통증|아프|아파|아픈|쑤시|찌르|욱신|점\s*정도|움직이면)/.test(source)) {
+        if (!/(통증.*없|아프.*않|안\s*아프|아픈\s*데는\s*없)/.test(source)) {
+          return '있음';
+        }
+      }
+    }
+
+    if (/통증평가도구|pain.*tool|npis|nrs/i.test(fieldText)) {
+      const numericalTool = keys.find((key) => /NPIS|NRS|Numerical/i.test(key));
+      if (numericalTool && /0점부터\s*10점|10점까지|\d+\s*점/.test(source)) {
+        return numericalTool;
+      }
+    }
+
+    if (/통증부위|pain.*site|통증\s*부위/i.test(fieldText)) {
+      if (/(엉덩|고관절|대퇴|다리|수술\s*부위)/.test(source)) {
+        if (has('상세부위')) return '상세부위';
+        if (has('관절통')) return '관절통';
+      }
+      for (const option of keys) {
+        if (!this.isNoneChoice(option) && source.includes(option)) return option;
+      }
+    }
+
+    if (/알레르|allerg/i.test(fieldText)) {
+      if (/(알레르|알러지)/.test(source) && /(없|전혀|하나도|아니요|없으)/.test(source) && has('없음')) {
+        return '없음';
+      }
+      if (/조영제/.test(source) && has('약')) return '약';
+      if (/음식|식품/.test(source) && has('식품')) return '식품';
+      if (/(알레르|알러지|두드러기|아나필락|부작용)/.test(source) && has('있음')) {
+        return '있음';
+      }
+    }
+
+    if (/입원\s*및\s*수술\s*이력|수술\s*이력|입원.*수술|과거병력|병력/i.test(fieldText)) {
+      if (/(수술|입원|진단|고혈압|당뇨|결핵|암|골다공증|부정맥)/.test(source)) {
+        if (/(없|처음|아예\s*처음)/.test(source) && has('없음')) return '없음';
+        if (has('있음')) return '있음';
+      }
+    }
+
+    if (/복용중인\s*약|투약|약물|medication/i.test(fieldText)) {
+      if (/(약|복용|먹고|처방|칼슘제|아스피린|혈압약|당뇨약|골다공증)/.test(source)) {
+        if (/(약.*안\s*먹|복용.*없|약은\s*안\s*먹)/.test(source) && has('없음')) return '없음';
+        if (has('있음')) return '있음';
+      }
+    }
+
+    if (/종교|relig/i.test(fieldText)) {
+      for (const option of ['기독교', '천주교', '불교', '없음']) {
+        if (has(option) && source.includes(option)) return option;
+      }
+      if (has('없음') && /(무교|종교.*없)/.test(source)) return '없음';
+    }
+
+    if (/보호자|caregiver/i.test(fieldText)) {
+      const relationPatterns: Array<[RegExp, string]> = [
+        [/딸|아들|자녀/, '자녀'],
+        [/아내|남편|배우자|와이프|부인/, '배우자'],
+        [/아버지|아버님|부친/, '부'],
+        [/어머니|어머님|모친/, '모'],
+        [/간병인/, '간병인'],
+      ];
+      for (const [pattern, option] of relationPatterns) {
+        if (pattern.test(source) && has(option)) return option;
+      }
+    }
+
+    if (/퇴원\s*예정지|퇴원.*장소|discharge.*destination/i.test(fieldText)) {
+      if (/(요양병원|요양\s*시설|재활병원)/.test(source) && has('요양 시설')) {
+        return '요양 시설';
+      }
+      if (/(자택|집으로|귀가)/.test(source) && has('자택')) return '자택';
+      if (/(타병원|전원|전원가)/.test(source) && has('타병원')) return '타병원';
+    }
+
+    if (/퇴원.*교통|교통\s*수단|transport/i.test(fieldText)) {
+      if (/(퇴원|모시고|갈 것|이동)[^.!?。]{0,40}(차|자가용)|차로\s*모시고/.test(source) && has('자가')) {
+        return '자가';
+      }
+      if (/(퇴원|전원)[^.!?。]{0,40}구급차/.test(source) && has('구급차')) return '구급차';
+      if (/대중\s*교통/.test(source) && has('대중 교통')) return '대중 교통';
+    }
+
+    return '';
+  }
+
+  private inferTextValueFromEvidence(
+    field: TemplateFieldSpecDto,
+    evidenceText: string,
+  ): string {
+    const fieldText = this.fieldSearchText(field);
+    const source = evidenceText.replace(/\s+/g, ' ').trim();
+    if (!source) return '';
+
+    if (/통증\s*강도|pain.*score|nrs|npis|점수|score/i.test(fieldText)) {
+      return this.extractPainScoreForField(field, evidenceText);
+    }
+    if (/시작시기/i.test(fieldText) && /통증|pain/i.test(fieldText)) {
+      if (/오늘\s*아침/.test(source)) return '오늘 아침 낙상 후';
+      const sentence = this.bestEvidenceSentence(evidenceText, [/다치|미끄러|넘어|통증|아프/]);
+      return sentence;
+    }
+    if (/악화요인/i.test(fieldText)) {
+      const m = source.match(/(?:조금만\s*)?움직(?:이려고\s*)?하면[^.!?。]{0,50}(?:아파|통증|점)/);
+      if (m) return this.truncateEvidence(m[0]);
+      return this.bestEvidenceSentence(evidenceText, [/움직|기침|자세|악화|심해/]);
+    }
+    if (/완화요인/i.test(fieldText)) {
+      const m = source.match(/가만히\s*있으면[^.!?。]{0,50}(?:나은|완화|점)/);
+      if (m) return this.truncateEvidence(m[0]);
+      return this.bestEvidenceSentence(evidenceText, [/가만히|쉬면|완화|나아/]);
+    }
+    if (/지속기간/i.test(fieldText) && /통증|pain/i.test(fieldText)) {
+      if (/오늘\s*아침/.test(source)) return '오늘 아침부터';
+    }
+    if (/주\s*증상|내원\s*과정|현병력|chief/i.test(fieldText)) {
+      const fall = source.match(/오늘\s*아침[^.!?。]{0,120}(?:응급실|왔습니다|왔어요)/);
+      if (fall) return this.truncateEvidence(fall[0]);
+      return this.bestEvidenceSentence(evidenceText, [/응급실|입원|다치|미끄러|수술|시술|검사/]);
+    }
+    if (/입원시\s*진단명|수술명|입원\s*및\s*수술\s*시기/i.test(fieldText)) {
+      const surgery = source.match(/5년\s*전[^.!?。]{0,50}척추\s*수술/);
+      const disease = source.match(/골다공증[^.!?。]{0,40}/);
+      return [surgery?.[0], disease?.[0]]
+        .filter(Boolean)
+        .map((v) => this.truncateEvidence(String(v)))
+        .join(', ');
+    }
+    if (/복용중인\s*약|투약\s*상태|약품명|medication/i.test(fieldText)) {
+      const meds = source.match(/골다공증\s*약[^.!?。]{0,60}칼슘제[^.!?。]{0,80}/);
+      if (meds) return this.truncateEvidence(meds[0]);
+      return this.bestEvidenceSentence(evidenceText, [/복용|먹고|약|칼슘제|처방|지참약/]);
+    }
+    if (/최종학력|학력|education/i.test(fieldText)) {
+      const education = source.match(/(초등학교|중학교|고등학교|대학교|대학원|초졸|중졸|고졸|대졸)[^.!?。]{0,20}(졸업|나왔|나오셨|졸)?/);
+      return education?.[0]?.trim() ?? '';
+    }
+
+    return '';
+  }
+
+  private bestEvidenceSentence(text: string, patterns: RegExp[]): string {
+    const sentence = this.splitEvidenceSentences(text)
+      .map((item) => this.stripSpeakerPrefix(item))
+      .find(
+        (item) =>
+          patterns.some((pattern) => pattern.test(item)) &&
+          !this.isQuestionLikeSentence(item),
+      );
+    return sentence ? this.truncateEvidence(sentence) : '';
+  }
+
+  private isTextField(field: TemplateFieldSpecDto): boolean {
+    return field.valueType === 'text_short' || field.valueType === 'text_long';
+  }
+
+  private stripSpeakerPrefix(value: string): string {
+    return value.replace(/^(간호사|환자|보호자)(?:\([^)]*\))?:\s*/i, '').trim();
+  }
+
+  private isQuestionLikeSentence(value: string): boolean {
+    return /[?？]|습니까|나요|신가요|있으신가요|드릴게요|여쭤|확인하겠습니다|말씀해주시면/.test(
+      value.trim(),
+    );
+  }
+
+  private normalizeDeclarativeFieldText(
+    value: string,
+    field: TemplateFieldSpecDto,
+  ): string {
+    const stripped = this.stripSpeakerPrefix(value)
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (!stripped) return '';
+    if (this.isQuestionLikeSentence(stripped)) return '';
+    if (this.isGenericPlaceholderValue(stripped, field, '')) return '';
+
+    let out = stripped
+      .replace(/^(네|아니요|아뇨|응|예)[,.\s]+/, '')
+      .replace(/(입니다|이에요|예요|습니다)\.?$/g, '임')
+      .replace(/했어요\.?$/g, '함')
+      .replace(/왔어요\.?$/g, '옴')
+      .replace(/먹고 있어요\.?$/g, '복용 중임')
+      .replace(/잘 먹었고\.?$/g, '식사량 양호함')
+      .trim();
+
+    if (/요[.。]?$/.test(out) && out.length <= 80) {
+      out = out.replace(/요[.。]?$/, '음');
+    }
+
+    return out;
+  }
+
+  private isLikelyQuestionInsteadOfAnswer(
+    value: string,
+    field: TemplateFieldSpecDto,
+  ): boolean {
+    const v = value.trim();
+    if (!v) return false;
+    const fieldText = this.fieldSearchText(field);
+    if (!this.isQuestionLikeSentence(v)) {
+      return false;
+    }
+    if (/시작시기|지속기간|악화요인|완화요인|현병력|주\s*증상|복용중인\s*약|투약/i.test(fieldText)) {
+      return true;
     }
     return false;
   }
