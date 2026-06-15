@@ -1,8 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import {
-  VOICE_RECORD_TEMPLATES,
-  type VoiceRecordTemplateId,
-} from "@/app/data/voiceRecordTemplates";
+import type { VoiceRecordTemplateId } from "@/app/data/voiceRecordTemplates";
 import { buildRecordPayload } from "@/app/data/recordPayload";
 import {
   buildDefaultRecordTitle,
@@ -32,9 +29,7 @@ export default function OcrPage() {
   const [isScanning, setIsScanning] = useState(false);
   const [error, setError] = useState("");
   const [copied, setCopied] = useState(false);
-  const [selectedTemplate, setSelectedTemplate] = useState<VoiceRecordTemplateId>(
-    VOICE_RECORD_TEMPLATES[0],
-  );
+  const [selectedTemplate, setSelectedTemplate] = useState<VoiceRecordTemplateId>("");
   const [isTemplateModalOpen, setIsTemplateModalOpen] = useState(false);
   const [generationMessage, setGenerationMessage] = useState("");
   const [templateFields, setTemplateFields] = useState<Record<string, string>>({});
@@ -48,10 +43,20 @@ export default function OcrPage() {
   const mergedTemplateQuery = useMergedTemplateFieldsQuery(selectedTemplate);
   const templatesMapQuery = useTemplatesMapQuery();
   const availableTemplates = useMemo(() => {
-    const ids = Object.keys(templatesMapQuery.data ?? {});
-    if (templatesMapQuery.isSuccess && ids.length === 0) return [];
-    return ids.length > 0 ? ids : [...VOICE_RECORD_TEMPLATES];
-  }, [templatesMapQuery.data, templatesMapQuery.isSuccess]);
+    return Object.keys(templatesMapQuery.data ?? {});
+  }, [templatesMapQuery.data]);
+
+  useEffect(() => {
+    if (availableTemplates.length === 0) {
+      setSelectedTemplate("");
+      return;
+    }
+    setSelectedTemplate((previous) =>
+      previous && availableTemplates.includes(previous)
+        ? previous
+        : availableTemplates[0]!,
+    );
+  }, [availableTemplates]);
 
   const selectedFileSummary = useMemo(() => {
     if (!selectedFile) return "선택된 파일이 없습니다.";
@@ -125,6 +130,10 @@ export default function OcrPage() {
 
   async function openTemplateModal() {
     if (!scanResult.trim()) return;
+    if (!selectedTemplate) {
+      setGenerationMessage("사용할 기록지 템플릿을 선택해 주세요.");
+      return;
+    }
     setIsFillingFromAi(true);
     setGenerationMessage("");
     const merged = mergedTemplateQuery.data ?? [];
@@ -240,10 +249,10 @@ export default function OcrPage() {
       <h1 className="mb-5 text-[28px] font-bold leading-tight text-[#111827] sm:mb-6 sm:text-3xl">
         OCR
       </h1>
-      <div className="grid min-h-0 flex-1 grid-cols-1 gap-6 lg:grid-cols-[4fr_6fr] lg:gap-8">
-        <section className="mobile-app-card flex min-h-0 min-w-0 flex-col p-4 sm:p-5">
-          <h2 className="text-sm font-semibold text-gray-900">파일 선택</h2>
-          <div className="mt-4 rounded-lg border border-dashed border-gray-300 bg-gray-50 p-4">
+      <div className="grid min-h-0 flex-1 grid-cols-1 gap-7 lg:grid-cols-[4fr_6fr] lg:gap-8">
+        <section className="flex min-h-0 min-w-0 flex-col lg:rounded-xl lg:border lg:border-[#E5E7EB] lg:bg-white lg:p-5 lg:shadow-[0_2px_8px_rgba(17,24,39,0.08)]">
+          <h2 className="text-base font-bold text-gray-900 lg:text-sm lg:font-semibold">파일 선택</h2>
+          <div className="mt-3 rounded-lg border border-gray-200 bg-white p-4 lg:mt-4 lg:border-dashed lg:bg-gray-50">
             <label
               htmlFor="ocr-file-input"
               className="mb-2 block text-sm font-medium text-gray-800"
@@ -258,7 +267,7 @@ export default function OcrPage() {
               className="block w-full cursor-pointer rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-700 file:mr-3 file:rounded-md file:border-0 file:bg-blue-50 file:px-3 file:py-1.5 file:text-sm file:font-medium file:text-blue-700 hover:file:bg-blue-100"
             />
           </div>
-          <div className="mt-4 min-h-[180px] max-h-[360px] rounded-lg border border-gray-200 bg-gray-50 p-3">
+          <div className="mt-4 min-h-[180px] max-h-[360px] rounded-lg border border-gray-200 bg-white p-3 lg:bg-gray-50">
             {previewUrl ? (
               <img
                 src={previewUrl}
@@ -276,15 +285,17 @@ export default function OcrPage() {
               type="button"
               onClick={handleScanFile}
               disabled={isScanning}
-              className="w-full rounded-lg bg-[#3B82F6] py-3 text-sm font-bold text-white transition-colors hover:bg-[#2563EB] disabled:cursor-not-allowed disabled:bg-blue-300"
+              className="h-12 w-full rounded-[5px] bg-[#3B82F6] text-sm font-bold text-white transition-colors hover:bg-[#2563EB] disabled:cursor-not-allowed disabled:bg-blue-300"
             >
               {isScanning ? "스캔 중..." : "스캔하기"}
             </button>
           </div>
         </section>
-        <section className="mobile-app-card flex min-h-0 min-w-0 flex-col p-4 sm:p-5">
+        <section className="flex min-h-0 min-w-0 flex-col border-t border-[#E5E7EB] pt-6 lg:rounded-xl lg:border lg:bg-white lg:p-5 lg:shadow-[0_2px_8px_rgba(17,24,39,0.08)]">
           <div className="mb-4 flex items-center justify-between">
-            <h2 className="text-sm font-semibold text-gray-900">스캔 결과</h2>
+            <h2 className="text-base font-bold text-gray-900 lg:text-sm lg:font-semibold">
+              스캔 결과
+            </h2>
             <button
               type="button"
               onClick={handleCopyResult}
@@ -298,14 +309,22 @@ export default function OcrPage() {
             readOnly
             value={scanResult}
             placeholder="스캔하기 버튼을 누르면 결과가 표시됩니다."
-            className="min-h-[220px] w-full flex-1 resize-none rounded-lg border border-gray-200 bg-gray-50 px-3 py-3 text-sm text-gray-900 sm:min-h-[320px] sm:px-4 md:min-h-[360px]"
+            className="min-h-[220px] w-full flex-1 resize-none rounded-lg border border-gray-200 bg-white px-3 py-3 text-sm text-gray-900 lg:min-h-[360px] lg:bg-gray-50 lg:px-4"
           />
           {scanResult.trim() ? (
             <div className="mt-4 rounded-lg border border-gray-200 bg-gray-50 p-4">
               <p className="mb-2 text-sm font-medium text-gray-800">템플릿 선택</p>
+              {templatesMapQuery.error ? (
+                <p className="mb-3 text-sm text-red-600">
+                  {templatesMapQuery.error instanceof Error
+                    ? templatesMapQuery.error.message
+                    : "템플릿을 불러오지 못했습니다."}
+                </p>
+              ) : null}
               <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
                 <select
                   value={selectedTemplate}
+                  disabled={templatesMapQuery.isLoading || availableTemplates.length === 0}
                   onChange={(event) =>
                     setSelectedTemplate(event.target.value as VoiceRecordTemplateId)
                   }
@@ -320,7 +339,7 @@ export default function OcrPage() {
                 <button
                   type="button"
                   onClick={() => void openTemplateModal()}
-                  disabled={isFillingFromAi}
+                  disabled={isFillingFromAi || !selectedTemplate}
                   className="rounded-lg bg-[#3B82F6] px-4 py-2.5 text-sm font-bold text-white hover:bg-[#2563EB] disabled:cursor-not-allowed disabled:bg-blue-300"
                 >
                   {isFillingFromAi ? "AI 생성 중..." : "생성하기"}

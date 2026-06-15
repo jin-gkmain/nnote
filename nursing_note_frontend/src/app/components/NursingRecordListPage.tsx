@@ -53,6 +53,7 @@ export default function NursingRecordListPage() {
   const rows: RecordListItem[] = recordListQuery.data?.items ?? [];
   const total = recordListQuery.data?.total ?? 0;
   const isLoading = recordListQuery.isLoading || recordListQuery.isFetching;
+  const listError = recordListQuery.error;
 
   const totalPages = useMemo(() => Math.max(1, Math.ceil(total / PAGE_SIZE)), [total]);
   const canPrev = page > 1;
@@ -82,7 +83,7 @@ export default function NursingRecordListPage() {
           });
         }}
       />
-      <div className="mb-5 flex flex-col gap-4">
+      <div className="mb-5 flex flex-col gap-3 lg:gap-4">
         <div className="flex items-center justify-between gap-3">
           <h1 className="text-[28px] font-bold leading-tight text-[#111827] sm:text-3xl">
             기록목록
@@ -90,12 +91,12 @@ export default function NursingRecordListPage() {
           <button
             type="button"
             onClick={() => navigate(ROUTES.aiSummary)}
-            className="h-10 shrink-0 rounded-lg bg-[#3B82F6] px-4 text-sm font-bold text-white shadow-sm hover:bg-[#2563EB]"
+            className="h-10 shrink-0 rounded-[5px] bg-[#3B82F6] px-3 text-sm font-bold text-white shadow-sm hover:bg-[#2563EB] lg:rounded-lg lg:px-4"
           >
             기록기반 생성
           </button>
         </div>
-        <div className="flex w-full min-w-0 flex-wrap items-center gap-2 sm:w-auto">
+        <div className="grid w-full min-w-0 grid-cols-[minmax(0,1fr)_auto] gap-2 lg:flex lg:w-auto lg:flex-wrap lg:items-center">
           <input
             value={searchInput}
             onChange={(e) => setSearchInput(e.target.value)}
@@ -105,7 +106,7 @@ export default function NursingRecordListPage() {
               setPage(1);
             }}
             placeholder="기록번호 / 제목 / 분류 검색"
-            className="h-11 min-w-0 flex-1 rounded-lg border border-[#E5E7EB] bg-white px-3 text-sm text-[#111827] shadow-sm sm:w-64 sm:flex-none"
+            className="h-11 min-w-0 rounded-lg border border-[#E5E7EB] bg-white px-3 text-sm text-[#111827] shadow-sm lg:w-64 lg:flex-none"
           />
           <button
             type="button"
@@ -123,7 +124,7 @@ export default function NursingRecordListPage() {
               setSort(e.target.value as RecordListSort);
               setPage(1);
             }}
-            className="h-11 w-full rounded-lg border border-[#E5E7EB] bg-white px-3 text-sm text-[#111827] shadow-sm sm:w-auto"
+            className="col-span-2 h-11 w-full rounded-lg border border-[#E5E7EB] bg-white px-3 text-sm text-[#111827] shadow-sm lg:col-span-1 lg:w-auto"
           >
             {SORT_OPTIONS.map((opt) => (
               <option key={opt.value} value={opt.value}>
@@ -135,7 +136,11 @@ export default function NursingRecordListPage() {
       </div>
 
       <div className="flex flex-col gap-4 lg:hidden">
-        {isLoading ? (
+        {listError ? (
+          <div className="rounded-xl border border-red-200 bg-red-50 px-5 py-10 text-center text-sm text-red-700">
+            {listError instanceof Error ? listError.message : "기록 목록을 불러오지 못했습니다."}
+          </div>
+        ) : isLoading ? (
           <div className="mobile-app-card px-5 py-10 text-center text-sm text-[#9CA3AF]">
             기록 목록을 불러오는 중...
           </div>
@@ -208,7 +213,13 @@ export default function NursingRecordListPage() {
             </tr>
           </thead>
           <tbody>
-            {isLoading ? (
+            {listError ? (
+              <tr>
+                <td className="px-4 py-8 text-sm text-red-600" colSpan={7}>
+                  {listError instanceof Error ? listError.message : "기록 목록을 불러오지 못했습니다."}
+                </td>
+              </tr>
+            ) : isLoading ? (
               <tr>
                 <td className="px-4 py-8 text-sm text-gray-500" colSpan={7}>
                   기록 목록을 불러오는 중...
@@ -270,7 +281,9 @@ export default function NursingRecordListPage() {
         </table>
       </div>
 
-      <div className="mt-4 flex flex-col items-stretch gap-3 lg:flex-row lg:items-center">
+      <div className={`mt-4 flex flex-col items-stretch gap-3 lg:flex-row lg:items-center ${
+        isLoading || listError ? "invisible" : ""
+      }`}>
         <p className="text-sm text-gray-600 lg:w-48 lg:shrink-0">
           총 {total}건 · {page}/{totalPages} 페이지
         </p>

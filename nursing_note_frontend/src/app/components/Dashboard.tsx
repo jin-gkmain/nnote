@@ -74,20 +74,13 @@ export default function Dashboard() {
   const templatesMapQuery = useTemplatesMapQuery();
   const recentCreated = recentCreatedQuery.data ?? [];
   const recentUpdated = recentUpdatedQuery.data ?? [];
-  const stats = statsQuery.data ?? {
-    totalRecords: 0,
-    todayVoiceRecords: 0,
-    voiceRecordsDodChange: 0,
-    todayRecordBasedRecords: 0,
-    recordBasedRecordsDodChange: 0,
-    todayOcrRecords: 0,
-    ocrRecordsDodChange: 0,
-    pendingEmrRecords: 0,
-    sentEmrRecords: 0,
-  };
-  const todayCreatedTotal =
-    stats.todayVoiceRecords + stats.todayRecordBasedRecords + stats.todayOcrRecords;
+  const stats = statsQuery.data;
+  const todayCreatedTotal = stats
+    ? stats.todayVoiceRecords + stats.todayRecordBasedRecords + stats.todayOcrRecords
+    : null;
   const displayName = user?.name?.trim() || user?.loginId?.trim() || "간호사";
+  const dashboardError =
+    statsQuery.error ?? recentCreatedQuery.error ?? recentUpdatedQuery.error;
 
   const openRecordDetail = (row: DashboardRecordRow) => {
     setDetailRecordId(row.id);
@@ -105,7 +98,14 @@ export default function Dashboard() {
         }}
       />
 
-      <div className="mx-auto flex w-full max-w-[720px] flex-col gap-9 lg:max-w-none">
+      <div className="mx-auto flex w-full max-w-[720px] flex-col gap-8 lg:max-w-none lg:gap-9">
+        {dashboardError ? (
+          <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+            {dashboardError instanceof Error
+              ? dashboardError.message
+              : "대시보드 데이터를 불러오지 못했습니다."}
+          </div>
+        ) : null}
         <section className="pt-1 lg:pt-0">
           <p className="text-base text-[#6B7280]">안녕하세요,</p>
           <h1 className="mt-1 text-[34px] font-bold leading-tight text-[#111827] sm:text-4xl">
@@ -118,30 +118,48 @@ export default function Dashboard() {
             <h2 className="text-2xl font-bold text-[#111827]">TODAY</h2>
             <span className="text-base text-[#6B7280]">{formatTodayYmd()}</span>
           </div>
-          <div className="grid grid-cols-3 gap-4">
-            <div className="mobile-app-card flex min-h-[122px] flex-col items-center justify-center px-2">
-              <div className="text-4xl font-bold text-[#3B82F6]">{todayCreatedTotal}</div>
-              <div className="mt-3 text-sm text-[#6B7280]">작성 기록</div>
-            </div>
-            <div className="mobile-app-card flex min-h-[122px] flex-col items-center justify-center px-2">
-              <div className="text-4xl font-bold text-[#3B82F6]">
-                {stats.todayRecordBasedRecords}
+          <div className="grid grid-cols-3 gap-2 lg:gap-4">
+            <div className="mobile-app-card flex min-h-[112px] flex-col items-center justify-center px-1.5 lg:min-h-[122px] lg:px-2">
+              <div className="text-[32px] font-bold leading-none text-[#3B82F6] lg:text-4xl">
+                {todayCreatedTotal ?? "—"}
               </div>
-              <div className="mt-3 text-sm text-[#6B7280]">기록기반 생성</div>
+              <div className="mt-3 text-center text-xs leading-tight text-[#6B7280] lg:text-sm">
+                작성 기록
+              </div>
             </div>
-            <div className="mobile-app-card flex min-h-[122px] flex-col items-center justify-center px-2">
-              <div className="text-4xl font-bold text-[#3B82F6]">{stats.sentEmrRecords}</div>
-              <div className="mt-3 text-sm text-[#6B7280]">EMR 전송</div>
+            <div className="mobile-app-card flex min-h-[112px] flex-col items-center justify-center px-1.5 lg:min-h-[122px] lg:px-2">
+              <div className="text-[32px] font-bold leading-none text-[#3B82F6] lg:text-4xl">
+                {stats?.todayRecordBasedRecords ?? "—"}
+              </div>
+              <div className="mt-3 text-center text-xs leading-tight text-[#6B7280] lg:text-sm">
+                기록기반 생성
+              </div>
+            </div>
+            <div className="mobile-app-card flex min-h-[112px] flex-col items-center justify-center px-1.5 lg:min-h-[122px] lg:px-2">
+              <div className="text-[32px] font-bold leading-none text-[#3B82F6] lg:text-4xl">
+                {stats?.sentEmrRecords ?? "—"}
+              </div>
+              <div className="mt-3 text-center text-xs leading-tight text-[#6B7280] lg:text-sm">
+                EMR 전송
+              </div>
             </div>
           </div>
-          <p className="mt-3 text-right text-xs text-[#9CA3AF]">
-            총 기록 {stats.totalRecords}건 · 미전송 {stats.pendingEmrRecords}건
-          </p>
+          {stats ? (
+            <p className="mt-3 text-right text-xs text-[#9CA3AF]">
+              총 기록 {stats.totalRecords}건 · 미전송 {stats.pendingEmrRecords}건
+            </p>
+          ) : (
+            <p className="mt-3 text-right text-xs text-[#9CA3AF]">
+              {statsQuery.isLoading ? "통계를 불러오는 중입니다." : "통계를 표시할 수 없습니다."}
+            </p>
+          )}
         </section>
 
         <section>
           <h2 className="mb-5 text-2xl font-bold text-[#111827]">주요 키워드</h2>
-          <div className="mobile-app-card min-h-[112px] p-4" aria-hidden="true" />
+          <div className="mobile-app-card flex min-h-[96px] items-center justify-center p-4 text-center text-sm text-[#9CA3AF]">
+            아직 집계된 주요 키워드가 없습니다.
+          </div>
         </section>
 
         <section>
@@ -156,7 +174,11 @@ export default function Dashboard() {
             </button>
           </div>
           <div className="flex flex-col gap-4">
-            {recentCreated.length === 0 ? (
+            {recentCreatedQuery.isLoading ? (
+              <div className="mobile-app-card px-5 py-10 text-center text-sm text-[#9CA3AF]">
+                최근 기록을 불러오는 중입니다.
+              </div>
+            ) : recentCreated.length === 0 ? (
               <div className="mobile-app-card px-5 py-10 text-center text-sm text-[#9CA3AF]">
                 생성된 기록이 없습니다.
               </div>

@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { FileStack, Home, Users, X } from "lucide-react";
+import { FileStack, Home, MessageSquareText, Settings, Users, X } from "lucide-react";
 import { useLocation, useNavigate } from "react-router-dom";
 import logoImg from "@/assets/logo.png";
 import {
@@ -73,7 +73,7 @@ export function AdminSidebar({ sidebarOpen, onCloseDrawer }: AdminSidebarProps) 
 
   return (
     <div
-      className={`fixed inset-y-0 left-0 z-30 flex h-full w-[88px] shrink-0 flex-col items-stretch border-r border-slate-700 bg-[#1F2937] pt-[env(safe-area-inset-top)] transition-transform duration-300 ease-out lg:static lg:w-[100px] lg:translate-x-0 lg:pt-0 ${
+      className={`fixed inset-y-0 left-0 z-30 hidden h-full w-[88px] shrink-0 flex-col items-stretch border-r border-slate-700 bg-[#1F2937] pt-[env(safe-area-inset-top)] transition-transform duration-300 ease-out lg:static lg:flex lg:w-[100px] lg:translate-x-0 lg:pt-0 ${
         sidebarOpen ? "translate-x-0" : "-translate-x-full lg:translate-x-0"
       }`}
     >
@@ -127,6 +127,22 @@ export function AdminSidebar({ sidebarOpen, onCloseDrawer }: AdminSidebarProps) 
           onNavigate={go}
           icon={<FileStack className="h-6 w-6 text-white" strokeWidth={2} aria-hidden />}
           label="템플릿"
+        />
+        <NavItem
+          id="inquiries"
+          activeId={activeId}
+          path={ROUTES.adminInquiries}
+          onNavigate={go}
+          icon={<MessageSquareText className="h-6 w-6 text-white" strokeWidth={2} aria-hidden />}
+          label="문의사항"
+        />
+        <NavItem
+          id="settings"
+          activeId={activeId}
+          path={ROUTES.adminSettings}
+          onNavigate={go}
+          icon={<Settings className="h-6 w-6 text-white" strokeWidth={2} aria-hidden />}
+          label="내정보"
         />
       </div>
     </div>

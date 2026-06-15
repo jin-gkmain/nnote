@@ -67,6 +67,8 @@ export interface TemplateListItem {
   isActive: boolean;
   sectionCount: number;
   fieldCount: number;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface TemplateDetail extends TemplateListItem {

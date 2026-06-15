@@ -136,13 +136,15 @@ export class TemplatesService implements OnModuleInit {
     try {
       const rows = (await conn.query(
         `SELECT f.template_id, f.title, f.version, f.source_sheet, f.institution, f.is_active,
+                f.created_at, f.updated_at,
                 COUNT(DISTINCT s.section_key) AS section_count,
                 COUNT(DISTINCT tf.field_key) AS field_count
          FROM template_forms f
          LEFT JOIN template_sections s ON s.template_id = f.template_id
          LEFT JOIN template_fields tf ON tf.template_id = f.template_id
          WHERE f.is_active = TRUE
-         GROUP BY f.template_id, f.title, f.version, f.source_sheet, f.institution, f.is_active
+         GROUP BY f.template_id, f.title, f.version, f.source_sheet, f.institution, f.is_active,
+                  f.created_at, f.updated_at
          ORDER BY f.created_at ASC, f.template_id ASC`,
       )) as any[];
       return rows.map((row) => ({
@@ -154,6 +156,8 @@ export class TemplatesService implements OnModuleInit {
         isActive: Boolean(row.is_active),
         sectionCount: Number(row.section_count ?? 0),
         fieldCount: Number(row.field_count ?? 0),
+        createdAt: this.toIsoString(row.created_at),
+        updatedAt: this.toIsoString(row.updated_at),
       }));
     } finally {
       conn.release();
@@ -468,7 +472,8 @@ export class TemplatesService implements OnModuleInit {
     templateId: string,
   ): Promise<Omit<TemplateListItem, 'sectionCount' | 'fieldCount'> | null> {
     const rows = (await conn.query(
-      `SELECT template_id, title, version, source_sheet, institution, is_active
+      `SELECT template_id, title, version, source_sheet, institution, is_active,
+              created_at, updated_at
        FROM template_forms WHERE template_id = ? LIMIT 1`,
       [templateId],
     )) as any[];
@@ -481,7 +486,14 @@ export class TemplatesService implements OnModuleInit {
       sourceSheet: String(row.source_sheet ?? ''),
       institution: String(row.institution ?? '세브란스'),
       isActive: Boolean(row.is_active),
+      createdAt: this.toIsoString(row.created_at),
+      updatedAt: this.toIsoString(row.updated_at),
     };
+  }
+
+  private toIsoString(value: unknown): string {
+    const date = value instanceof Date ? value : new Date(String(value ?? ''));
+    return Number.isNaN(date.getTime()) ? '' : date.toISOString();
   }
 
   private async countFreeTextSentinelFields(

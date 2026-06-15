@@ -200,31 +200,17 @@ export type RecordListSort =
 export const fetchRecentCreatedRecords = async (
   limit = 10,
 ): Promise<DashboardRecordRow[]> => {
-  try {
-    const res = await fetch(
-      `/api/records/recent/created?limit=${limit}`,
-    );
-    if (!res.ok) return [];
-    return await res.json();
-  } catch {
-    console.error("최근 생성 기록 조회 실패");
-    return [];
-  }
+  const res = await fetch(`/api/records/recent/created?limit=${limit}`);
+  if (!res.ok) throw new Error("최근 생성 기록 조회 실패");
+  return await res.json();
 };
 
 export const fetchRecentUpdatedRecords = async (
   limit = 10,
 ): Promise<DashboardRecordRow[]> => {
-  try {
-    const res = await fetch(
-      `/api/records/recent/updated?limit=${limit}`,
-    );
-    if (!res.ok) return [];
-    return await res.json();
-  } catch {
-    console.error("최근 수정 기록 조회 실패");
-    return [];
-  }
+  const res = await fetch(`/api/records/recent/updated?limit=${limit}`);
+  if (!res.ok) throw new Error("최근 수정 기록 조회 실패");
+  return await res.json();
 };
 
 export const fetchRecordListPage = async ({
@@ -238,20 +224,15 @@ export const fetchRecordListPage = async ({
   sort?: RecordListSort;
   search?: string;
 }): Promise<RecordListPageResponse> => {
-  try {
-    const q = new URLSearchParams({
-      page: String(page),
-      pageSize: String(pageSize),
-      sort,
-      search,
-    });
-    const res = await fetch(`/api/records?${q.toString()}`);
-    if (!res.ok) return { total: 0, items: [] };
-    return await res.json();
-  } catch {
-    console.error("기록 목록 조회 실패");
-    return { total: 0, items: [] };
-  }
+  const q = new URLSearchParams({
+    page: String(page),
+    pageSize: String(pageSize),
+    sort,
+    search,
+  });
+  const res = await fetch(`/api/records?${q.toString()}`);
+  if (!res.ok) throw new Error("기록 목록 조회 실패");
+  return await res.json();
 };
 
 /** Parse dashboard recordDateTime for sort order (e.g. "2026.4.14 14:30"). */

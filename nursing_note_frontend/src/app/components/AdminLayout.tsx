@@ -3,6 +3,7 @@ import { useState } from "react";
 import { Link, Outlet, useLocation } from "react-router-dom";
 import { RequireAdmin } from "@/app/admin/RequireAdmin";
 import { AdminSidebar } from "@/app/components/AdminSidebar";
+import { AdminBottomNav } from "@/app/components/AdminBottomNav";
 import { SidebarMenuIcon } from "@/app/components/SidebarMenuIcon";
 import {
   DropdownMenu,
@@ -36,7 +37,7 @@ export default function AdminLayout() {
         ) : null}
 
         <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-white">
-          <header className="flex min-h-[52px] shrink-0 items-center bg-white px-4 pt-[max(0px,env(safe-area-inset-top))] pb-2 md:h-[60px] md:px-6 md:py-0 md:pt-0">
+          <header className="hidden min-h-[52px] shrink-0 items-center bg-white px-4 pt-[max(0px,env(safe-area-inset-top))] pb-2 md:h-[60px] md:px-6 md:py-0 md:pt-0 lg:flex">
             <div className="flex w-10 shrink-0 justify-start lg:hidden">
               {!sidebarOpen ? (
                 <button
@@ -102,9 +103,10 @@ export default function AdminLayout() {
             </div>
           ) : null}
 
-          <main className="flex-1 overflow-y-auto overscroll-contain px-3 py-4 pb-[max(1rem,env(safe-area-inset-bottom))] sm:px-4 sm:py-6 md:px-8 md:py-8 lg:px-10 lg:py-10">
+          <main className="flex-1 overflow-y-auto overscroll-contain bg-[#f9fafb] px-[clamp(1rem,5vw,1.5rem)] pb-[calc(88px+env(safe-area-inset-bottom))] pt-[max(1rem,env(safe-area-inset-top))] md:px-8 lg:bg-white lg:px-10 lg:py-10">
             <Outlet />
           </main>
+          <AdminBottomNav />
         </div>
       </div>
     </RequireAdmin>

@@ -10,7 +10,7 @@ import {
 } from "@/app/data/recordTitle";
 import type { DashboardRecordRow, RecordDetailResponse } from "@/app/data/nursingRecords";
 import { fetchRecordById, toRecordDate, toRecordTime } from "@/app/data/nursingRecords";
-import { VOICE_RECORD_TEMPLATES, type VoiceRecordTemplateId } from "@/app/data/voiceRecordTemplates";
+import type { VoiceRecordTemplateId } from "@/app/data/voiceRecordTemplates";
 import { buildAiTemplateFieldPayload, splitTemplateLabel } from "@/app/data/template-field-registry";
 import { queryKeys } from "@/app/query/query-keys";
 import {
@@ -52,12 +52,10 @@ export default function AiRecordSummaryPage() {
   const createRecordMutation = useCreateRecordMutation();
 
   const templateOptions = useMemo(() => {
-    const ids = Object.keys(templatesMapQuery.data ?? {});
-    if (templatesMapQuery.isSuccess && ids.length === 0) return [];
-    return ids.length > 0 ? ids : [...VOICE_RECORD_TEMPLATES];
-  }, [templatesMapQuery.data, templatesMapQuery.isSuccess]);
+    return Object.keys(templatesMapQuery.data ?? {});
+  }, [templatesMapQuery.data]);
 
-  const [templateId, setTemplateId] = useState<VoiceRecordTemplateId>(VOICE_RECORD_TEMPLATES[0]);
+  const [templateId, setTemplateId] = useState<VoiceRecordTemplateId>("");
   const templateFieldsQuery = useMergedTemplateFieldsQuery(templateId);
   const visibleTemplateFields = (templateFieldsQuery.data ?? []).filter((f) => !f.hidden);
   const groupedTemplateFields = useMemo(() => {
@@ -81,6 +79,16 @@ export default function AiRecordSummaryPage() {
   const [summaryRecordTitle, setSummaryRecordTitle] = useState("");
   const [summaryTitleGen, setSummaryTitleGen] = useState(0);
   const summaryTitleSessionRef = useRef("");
+
+  useEffect(() => {
+    if (templateOptions.length === 0) {
+      setTemplateId("");
+      return;
+    }
+    setTemplateId((previous) =>
+      previous && templateOptions.includes(previous) ? previous : templateOptions[0]!,
+    );
+  }, [templateOptions]);
 
   const rows = mergedRecordsQuery.data ?? [];
   const listLoading = mergedRecordsQuery.isLoading || mergedRecordsQuery.isFetching;
@@ -254,12 +262,20 @@ export default function AiRecordSummaryPage() {
           <select
             className={selectClass}
             value={templateId}
+            disabled={templatesMapQuery.isLoading || templateOptions.length === 0}
             onChange={(e) => setTemplateId(e.target.value as VoiceRecordTemplateId)}
           >
             {templateOptions.map((t) => (
               <option key={t} value={t}>{t}</option>
             ))}
           </select>
+          {templatesMapQuery.error ? (
+            <p className="mt-2 text-xs text-red-600">
+              {templatesMapQuery.error instanceof Error
+                ? templatesMapQuery.error.message
+                : "템플릿을 불러오지 못했습니다."}
+            </p>
+          ) : null}
           <p className="mt-1.5 text-xs text-gray-500">선택 기록을 바탕으로 위 템플릿의 새 기록을 생성합니다.</p>
 
           <p className="mt-5 text-sm font-medium text-gray-800">기준 기록 선택</p>

@@ -9,6 +9,8 @@ import AppLayout from "@/app/components/AppLayout";
 import Dashboard from "@/app/components/Dashboard";
 import AiRecordSummaryPage from "@/app/components/AiRecordSummaryPage";
 import LoginPage from "@/app/components/LoginPage";
+import InquiryPage from "@/app/components/InquiryPage";
+import AdminInquiriesPage from "@/app/components/AdminInquiriesPage";
 import NursingRecordListPage from "@/app/components/NursingRecordListPage";
 import OcrPage from "@/app/components/OcrPage";
 import SettingsPage from "@/app/components/SettingsPage";
@@ -19,10 +21,12 @@ function AppRoutes() {
   return (
     <Routes>
       <Route path={ROUTES.login} element={<LoginPage />} />
+      <Route path={ROUTES.inquiry} element={<InquiryPage />} />
       <Route path="/admin" element={<AdminLayout />}>
         <Route index element={<AdminHomePage />} />
         <Route path="team" element={<AdminTeamPage />} />
         <Route path="templates" element={<AdminTemplatesPage />} />
+        <Route path="inquiries" element={<AdminInquiriesPage />} />
         <Route path="settings" element={<AdminSettingsPage />} />
         <Route path="users/:id" element={<Navigate to={ROUTES.adminRoot} replace />} />
       </Route>

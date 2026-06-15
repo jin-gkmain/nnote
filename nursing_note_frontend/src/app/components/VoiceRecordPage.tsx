@@ -16,14 +16,7 @@ import {
   buildDefaultRecordTitle,
   classificationLabelForTemplate,
 } from "@/app/data/recordTitle";
-import {
-  VOICE_RECORD_TEMPLATES,
-  type VoiceRecordTemplateId,
-} from "@/app/data/voiceRecordTemplates";
-import {
-  DEMO_VOICE_SCRIPTS,
-  type DemoVoiceScript,
-} from "@/app/data/demoVoiceScripts";
+import type { VoiceRecordTemplateId } from "@/app/data/voiceRecordTemplates";
 import {
   buildAiTemplateFieldPayload,
   fetchTemplateUiConfigMap,
@@ -153,7 +146,7 @@ interface GeneratedNursingDraft {
   sttMeta: SttMeta | null;
 }
 
-type GenerationSourceType = "file" | "recording" | "demo_script";
+type GenerationSourceType = "file" | "recording";
 
 /** 생성 완료 후 파일첨부 자리에 표시하는 메타 */
 interface GenerationMeta {
@@ -297,69 +290,8 @@ function textFromWhisperLiveLines(lines: WhisperLiveLine[] | undefined): string 
     .join(" ");
 }
 
-function transcriptFromDemoScript(script: DemoVoiceScript): string {
-  return script.lines.map((line) => `${line.speaker}: ${line.text}`).join("\n");
-}
-
-function previewFromDemoScript(script: DemoVoiceScript): string {
-  return script.lines
-    .slice(0, 2)
-    .map((line) => `${line.speaker}: ${line.text}`)
-    .join(" ");
-}
-
-function estimateDemoLineDurationSec(text: string): number {
-  return Math.max(2, Math.min(8, Math.ceil(text.length / 18)));
-}
-
-function segmentsFromDemoScript(script: DemoVoiceScript): SttSegment[] {
-  let cursor = 0;
-  return script.lines.map((line, index) => {
-    const duration = estimateDemoLineDurationSec(line.text);
-    const startSec = cursor;
-    const endSec = cursor + duration;
-    cursor = endSec;
-    return {
-      id: `${script.id}-${index + 1}`,
-      speaker: line.speaker,
-      speakerLabel: line.speaker,
-      startSec,
-      endSec,
-      text: line.text,
-      words: [],
-    };
-  });
-}
-
-function speakerSummaryFromSegments(segments: SttSegment[]): SttSpeakerSummary[] {
-  const map = new Map<string, SttSpeakerSummary>();
-  for (const segment of segments) {
-    const prev = map.get(segment.speaker) ?? {
-      speaker: segment.speaker,
-      label: segment.speakerLabel,
-      totalSpeechSec: 0,
-      segmentCount: 0,
-    };
-    prev.totalSpeechSec += Math.max(0, segment.endSec - segment.startSec);
-    prev.segmentCount += 1;
-    map.set(segment.speaker, prev);
-  }
-  return [...map.values()];
-}
-
-function demoScriptMeta(script: DemoVoiceScript, segments: SttSegment[]): SttMeta {
-  return {
-    engine: "demo-script",
-    language: "ko-KR",
-    audioDurationSec: segments.at(-1)?.endSec ?? 0,
-    processingMs: 0,
-    modelVersion: script.sourceSheet,
-  };
-}
-
 function generationSourceLabel(sourceType: GenerationSourceType): string {
   if (sourceType === "recording") return "녹음";
-  if (sourceType === "demo_script") return "데모 스크립트";
   return "파일";
 }
 
@@ -371,6 +303,7 @@ export default function VoiceRecordPage() {
   const [selectedTemplates, setSelectedTemplates] = useState<VoiceRecordTemplateId[]>(
     [],
   );
+  const [selectedUploadFile, setSelectedUploadFile] = useState<File | null>(null);
   const [attachedFile, setAttachedFile] = useState<File | null>(null);
   const [generatedDraft, setGeneratedDraft] = useState<GeneratedNursingDraft | null>(
     null,
@@ -423,6 +356,7 @@ export default function VoiceRecordPage() {
   const recordingStateRef = useRef(recordingState);
   recordingStateRef.current = recordingState;
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const uploadInputRef = useRef<HTMLInputElement | null>(null);
 
   /** 오버레이 진행 막대: 실제 백분율 없이 천천히 차오르는 표시 */
   const [loadingFillPercent, setLoadingFillPercent] = useState(0);
@@ -436,7 +370,7 @@ export default function VoiceRecordPage() {
   const updateEmrMutation = useUpdateRecordEmrStatusMutation(token);
   const availableTemplates = useMemo((): string[] => {
     const fromServer = Object.keys(templatesMapQuery.data ?? {});
-    return (fromServer.length > 0 ? fromServer : [...VOICE_RECORD_TEMPLATES]).filter(
+    return fromServer.filter(
       (templateId) => !EXCLUDED_VOICE_TEMPLATE_IDS.has(templateId.toUpperCase()),
     );
   }, [templatesMapQuery.data]);
@@ -1109,21 +1043,6 @@ export default function VoiceRecordPage() {
     ],
   );
 
-  const generateDraftFromDemoScript = useCallback(
-    async (script: DemoVoiceScript) => {
-      const segments = segmentsFromDemoScript(script);
-      await generateDraftFromTranscript({
-        transcript: transcriptFromDemoScript(script),
-        fileName: script.title,
-        sourceType: "demo_script",
-        sttSegments: segments,
-        sttSpeakers: speakerSummaryFromSegments(segments),
-        sttMeta: demoScriptMeta(script, segments),
-      });
-    },
-    [generateDraftFromTranscript],
-  );
-
   useEffect(() => {
     if (recordingState !== "recording") {
       if (timerRef.current) {
@@ -1354,6 +1273,8 @@ export default function VoiceRecordPage() {
     setAudioPlaybackUrl(null);
     setCurrentPlaybackSec(0);
     setActiveSegmentId(null);
+    setSelectedUploadFile(null);
+    if (uploadInputRef.current) uploadInputRef.current.value = "";
   }, [audioPlaybackUrl]);
 
   const handleSaveSingleGeneratedRecord = useCallback(async () => {
@@ -1543,7 +1464,21 @@ export default function VoiceRecordPage() {
         </div>
 
         <div className="flex flex-col gap-2.5 pb-44">
-          {availableTemplates.map((templateId) => {
+          {templatesMapQuery.isLoading ? (
+            <div className="mobile-app-card px-5 py-10 text-center text-sm text-[#6B7280]">
+              기록지 목록을 불러오는 중입니다.
+            </div>
+          ) : templatesMapQuery.error ? (
+            <div className="rounded-xl border border-red-200 bg-red-50 px-5 py-10 text-center text-sm text-red-700">
+              {templatesMapQuery.error instanceof Error
+                ? templatesMapQuery.error.message
+                : "기록지 목록을 불러오지 못했습니다."}
+            </div>
+          ) : availableTemplates.length === 0 ? (
+            <div className="mobile-app-card px-5 py-10 text-center text-sm text-[#6B7280]">
+              사용 가능한 기록지가 없습니다.
+            </div>
+          ) : availableTemplates.map((templateId) => {
             const selected = selectedTemplates.includes(templateId);
             const disabled = !selected && selectedTemplates.length >= 3;
             return (
@@ -1577,7 +1512,7 @@ export default function VoiceRecordPage() {
 
         {error ? <p className="mt-4 text-sm text-red-600">{error}</p> : null}
 
-        <div className="fixed inset-x-0 bottom-[var(--nursing-mobile-tabbar-height)] z-20 border-t border-[#E5E7EB] bg-white/95 px-5 pb-3 pt-3 shadow-[0_-8px_18px_rgba(17,24,39,0.08)] backdrop-blur lg:left-[100px] lg:bottom-0 lg:px-10">
+        <div className="fixed bottom-[var(--nursing-mobile-tabbar-height)] left-1/2 z-20 w-full max-w-[393px] -translate-x-1/2 border-t border-[#E5E7EB] bg-white/95 px-5 pb-3 pt-3 shadow-[0_-8px_18px_rgba(17,24,39,0.08)] backdrop-blur lg:bottom-0 lg:left-[100px] lg:right-0 lg:w-auto lg:max-w-none lg:translate-x-0 lg:px-10">
           <div className="mx-auto flex max-w-[720px] items-center gap-3 lg:max-w-none">
             <div className="min-w-[4.5rem] shrink-0">
               <p className="text-xs font-semibold text-[#6B7280]">선택</p>
@@ -1585,14 +1520,14 @@ export default function VoiceRecordPage() {
                 {selectedTemplates.length}/3개
               </p>
             </div>
-          <button
-            type="button"
-            disabled={selectedTemplates.length === 0}
-            onClick={goToCaptureStep}
+            <button
+              type="button"
+              disabled={selectedTemplates.length === 0}
+              onClick={goToCaptureStep}
               className="h-12 flex-1 rounded-xl bg-[#3B82F6] text-base font-bold text-white shadow-sm transition hover:bg-[#2563EB] disabled:bg-[#EDEDED] disabled:text-[#9CA3AF]"
-          >
-            선택완료
-          </button>
+            >
+              선택완료
+            </button>
           </div>
         </div>
       </div>
@@ -1748,35 +1683,57 @@ export default function VoiceRecordPage() {
         {!generatedDraft && inputMode === "upload" ? (
           <section className="mb-6">
             <div className="mb-4">
-              <h2 className="text-xl font-bold text-[#20242C]">데모 스크립트 선택</h2>
+              <h2 className="text-xl font-bold text-[#20242C]">음성 파일 업로드</h2>
               <p className="mt-2 text-sm leading-6 text-[#6B7280]">
-                선택한 대화 스크립트로 STT 없이 바로 간호기록지 초안을 생성합니다.
+                실제 음성 파일을 전사한 뒤 선택한 기록지 초안을 생성합니다.
               </p>
             </div>
-            <div className="grid gap-3 md:grid-cols-2">
-              {DEMO_VOICE_SCRIPTS.map((script) => (
+            <div className="rounded-xl border border-dashed border-[#CBD5E1] bg-white p-5">
+              <input
+                ref={uploadInputRef}
+                type="file"
+                accept="audio/*,.wav,.mp3,.m4a,.aac,.ogg,.webm,.flac,.mp4"
+                className="sr-only"
+                onChange={(event) => {
+                  setSelectedUploadFile(event.target.files?.[0] ?? null);
+                  setError("");
+                }}
+              />
+              <div className="flex items-start gap-3">
+                <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg bg-[#EFF6FF] text-[#3B82F6]">
+                  <FileText className="h-5 w-5" strokeWidth={1.9} />
+                </span>
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-sm font-bold text-[#20242C]">
+                    {selectedUploadFile ? selectedUploadFile.name : "선택된 파일이 없습니다."}
+                  </p>
+                  <p className="mt-1 text-xs leading-5 text-[#6B7280]">
+                    WAV, MP3, M4A, AAC, OGG, WebM 등 음성 파일을 지원합니다.
+                  </p>
+                </div>
+              </div>
+              <div className="mt-5 grid grid-cols-2 gap-2">
                 <button
-                  key={script.id}
                   type="button"
-                  disabled={!canStartVoiceCapture || isGenerating}
-                  onClick={() => generateDraftFromDemoScript(script)}
-                  className="mobile-app-card min-h-[132px] p-4 text-left transition hover:border-[#93C5FD] hover:bg-[#F8FBFF] disabled:cursor-not-allowed disabled:opacity-50"
+                  onClick={() => uploadInputRef.current?.click()}
+                  disabled={isGenerating}
+                  className="h-11 rounded-[5px] border border-[#D1D5DB] bg-white text-sm font-semibold text-[#374151] hover:bg-[#F9FAFB] disabled:opacity-50"
                 >
-                  <div className="flex items-start gap-3">
-                    <span className="mt-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-[#EFF6FF] text-[#3B82F6]">
-                      <FileText className="h-5 w-5" strokeWidth={1.9} />
-                    </span>
-                    <span className="min-w-0">
-                      <span className="block text-sm font-bold text-[#20242C]">
-                        {script.title}
-                      </span>
-                      <span className="mt-1 line-clamp-3 block text-xs leading-5 text-[#6B7280]">
-                        {previewFromDemoScript(script)}
-                      </span>
-                    </span>
-                  </div>
+                  파일 선택
                 </button>
-              ))}
+                <button
+                  type="button"
+                  disabled={!selectedUploadFile || !canStartVoiceCapture || isGenerating}
+                  onClick={() => {
+                    if (selectedUploadFile) {
+                      void generateDraftFromAudio(selectedUploadFile, "file");
+                    }
+                  }}
+                  className="h-11 rounded-[5px] bg-[#3B82F6] text-sm font-bold text-white hover:bg-[#2563EB] disabled:cursor-not-allowed disabled:bg-[#D1D5DB]"
+                >
+                  {isGenerating ? "처리 중..." : "전사 및 생성"}
+                </button>
+              </div>
             </div>
           </section>
         ) : null}
@@ -2083,7 +2040,7 @@ export default function VoiceRecordPage() {
           <button
             type="button"
             onClick={() => setLiveTranscriptPanelOpen(true)}
-            className="fixed bottom-[calc(var(--nursing-mobile-tabbar-height)+0.85rem)] right-4 z-20 inline-flex min-h-11 items-center gap-2 rounded-full border border-[#DBEAFE] bg-white px-4 text-sm font-bold text-[#2563EB] shadow-[0_8px_24px_rgba(37,99,235,0.18)] lg:hidden"
+            className="mobile-shell-right fixed bottom-[calc(var(--nursing-mobile-tabbar-height)+0.85rem)] z-20 inline-flex min-h-11 items-center gap-2 rounded-full border border-[#DBEAFE] bg-white px-4 text-sm font-bold text-[#2563EB] shadow-[0_8px_24px_rgba(37,99,235,0.18)] lg:hidden"
             aria-expanded="false"
             aria-controls="live-transcript-panel"
           >
@@ -2094,7 +2051,7 @@ export default function VoiceRecordPage() {
         ) : null}
         <section
           id="live-transcript-panel"
-          className={`${liveTranscriptPanelOpen ? "fixed" : "hidden"} inset-x-0 bottom-[var(--nursing-mobile-tabbar-height)] z-20 max-h-[min(72dvh,520px)] overflow-hidden rounded-t-3xl border border-[#E5E7EB] bg-white shadow-[0_-8px_24px_rgba(17,24,39,0.12)] lg:static lg:mt-auto lg:block lg:max-h-none lg:overflow-hidden lg:shadow-[0_-4px_12px_rgba(17,24,39,0.05)]`}
+          className={`${liveTranscriptPanelOpen ? "fixed" : "hidden"} bottom-[var(--nursing-mobile-tabbar-height)] left-1/2 z-20 max-h-[min(72dvh,520px)] w-full max-w-[393px] -translate-x-1/2 overflow-hidden rounded-t-3xl border border-[#E5E7EB] bg-white shadow-[0_-8px_24px_rgba(17,24,39,0.12)] lg:static lg:mt-auto lg:block lg:max-h-none lg:max-w-none lg:translate-x-0 lg:overflow-hidden lg:shadow-[0_-4px_12px_rgba(17,24,39,0.05)]`}
         >
           <div className="mx-auto mt-1 h-1 w-20 rounded-full bg-[#D1D5DB] sm:h-1.5 sm:w-24" />
           <div className="flex items-center justify-between border-b border-[#E5E7EB] px-5 py-2.5 sm:py-3">

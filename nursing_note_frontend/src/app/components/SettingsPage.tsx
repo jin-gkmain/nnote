@@ -1,17 +1,17 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "@/app/auth/auth-context";
-import { AdminUserManagementPanel } from "@/app/components/AdminUserManagementPanel";
 import { ProfileSettingsForm } from "@/app/components/ProfileSettingsForm";
 import { NurseVerificationSection } from "@/app/components/NurseVerificationSection";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/app/components/ui/tabs";
 import { type AuthUser } from "@/app/data/auth-api";
 import { InputAssistField } from "@/app/components/input-assist-field";
 import { writeInputAssistSettingsCache } from "@/app/data/input-assist-api";
-import { VOICE_RECORD_TEMPLATES, type VoiceRecordTemplateId } from "@/app/data/voiceRecordTemplates";
+import type { VoiceRecordTemplateId } from "@/app/data/voiceRecordTemplates";
 import { ROUTES } from "@/app/navigation/routes";
 import {
   useInputAssistSettingsQuery,
+  useTemplatesMapQuery,
   useUpdateInputAssistSettingsMutation,
 } from "@/app/query/use-app-query";
 
@@ -55,17 +55,22 @@ export default function SettingsPage() {
             value="account"
             className="rounded-lg px-4 py-2 data-[state=active]:bg-white data-[state=active]:shadow-sm"
           >
-            내 계정
+            계정
           </TabsTrigger>
           <TabsTrigger
             value="input-assist"
             className="rounded-lg px-4 py-2 data-[state=active]:bg-white data-[state=active]:shadow-sm"
           >
-            자동완성/약어
+            단축어
           </TabsTrigger>
         </TabsList>
         <TabsContent value="account" className="mt-0 min-h-0 overflow-y-auto overscroll-contain">
-          <AccountSettingsSection user={user} token={token} onProfileSaved={() => void refreshMe()} />
+          <AccountSettingsSection
+            user={user}
+            token={token}
+            onProfileSaved={() => void refreshMe()}
+            onEnterAdminMode={() => navigate(ROUTES.adminRoot)}
+          />
         </TabsContent>
         <TabsContent value="input-assist" className="mt-0 min-h-0 overflow-y-auto overscroll-contain">
           <InputAssistSettingsSection token={token} />
@@ -77,13 +82,39 @@ export default function SettingsPage() {
 
 function InputAssistSettingsSection({ token }: { token: string }) {
   const settingsQuery = useInputAssistSettingsQuery(token);
+  const templatesQuery = useTemplatesMapQuery();
   const updateMutation = useUpdateInputAssistSettingsMutation(token);
   const [enabled, setEnabled] = useState(true);
   const [entries, setEntries] = useState<InputAssistEntryRow[]>([]);
   const [message, setMessage] = useState("");
   const [testAssistText, setTestAssistText] = useState("");
-  const [testTemplateId, setTestTemplateId] = useState<VoiceRecordTemplateId>(VOICE_RECORD_TEMPLATES[0]);
-  const [testFieldKey, setTestFieldKey] = useState("situation");
+  const [testTemplateId, setTestTemplateId] = useState<VoiceRecordTemplateId>("");
+  const [testFieldKey, setTestFieldKey] = useState("");
+  const templateIds = useMemo(
+    () => Object.keys(templatesQuery.data ?? {}),
+    [templatesQuery.data],
+  );
+  const testFieldOptions = useMemo(() => {
+    if (!testTemplateId) return [];
+    const sections = templatesQuery.data?.[testTemplateId]?.sections ?? {};
+    const options = Object.entries(sections).flatMap(([section, fields]) =>
+      Object.entries(fields).map(([fieldKey, field]) => ({
+        fieldKey,
+        baseLabel: `${section} · ${field.label || fieldKey}`,
+      })),
+    );
+    const labelCounts = new Map<string, number>();
+    for (const option of options) {
+      labelCounts.set(option.baseLabel, (labelCounts.get(option.baseLabel) ?? 0) + 1);
+    }
+    return options.map(({ fieldKey, baseLabel }) => ({
+      fieldKey,
+      label:
+        (labelCounts.get(baseLabel) ?? 0) > 1
+          ? `${baseLabel} · ${fieldKey}`
+          : baseLabel,
+    }));
+  }, [templatesQuery.data, testTemplateId]);
 
   const inputAssistSettingsOverride = useMemo(
     () => ({
@@ -98,6 +129,28 @@ function InputAssistSettingsSection({ token }: { token: string }) {
     setEnabled(settingsQuery.data.enabled);
     setEntries(settingsQuery.data.entries.map((e) => newInputAssistRow({ trigger: e.trigger, replacement: e.replacement })));
   }, [settingsQuery.data]);
+
+  useEffect(() => {
+    if (templateIds.length === 0) {
+      setTestTemplateId("");
+      return;
+    }
+    setTestTemplateId((previous) =>
+      previous && templateIds.includes(previous) ? previous : templateIds[0]!,
+    );
+  }, [templateIds]);
+
+  useEffect(() => {
+    if (testFieldOptions.length === 0) {
+      setTestFieldKey("");
+      return;
+    }
+    setTestFieldKey((previous) =>
+      previous && testFieldOptions.some((option) => option.fieldKey === previous)
+        ? previous
+        : testFieldOptions[0]!.fieldKey,
+    );
+  }, [testFieldOptions]);
 
   function updateEntry(index: number, patch: Partial<{ trigger: string; replacement: string }>) {
     setEntries((prev) => prev.map((entry, i) => (i === index ? { ...entry, ...patch } : entry)));
@@ -146,7 +199,7 @@ function InputAssistSettingsSection({ token }: { token: string }) {
     try {
       await updateMutation.mutateAsync({ enabled, entries: normalized });
       writeInputAssistSettingsCache({ enabled, entries: normalized });
-      setMessage("자동완성/약어 설정이 저장되었습니다.");
+      setMessage("단축어 설정이 저장되었습니다.");
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "설정 저장에 실패했습니다.");
     }
@@ -156,9 +209,9 @@ function InputAssistSettingsSection({ token }: { token: string }) {
     <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm sm:p-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <p className="text-sm font-semibold text-gray-900">기록지 자동완성</p>
+          <p className="text-sm font-semibold text-gray-900">단축어 설정</p>
           <p className="mt-0.5 text-xs text-gray-500">
-            입력 중 회색 제안을 보여주고 Tab으로 수락합니다.
+            기록지 입력 중 단축어를 치환하고, 필요한 경우 회색 제안을 Tab으로 수락합니다.
           </p>
         </div>
         <label className="inline-flex items-center gap-2 text-sm">
@@ -170,8 +223,8 @@ function InputAssistSettingsSection({ token }: { token: string }) {
       <div className="mt-6 rounded-lg border border-dashed border-gray-200 bg-gray-50/90 p-4">
         <p className="text-sm font-semibold text-gray-900">동작 테스트</p>
         <p className="mt-1 text-xs text-gray-500">
-          위에서 바꾼 활성화 여부·약어 사전이 저장하기 전에도 이 입력란에 그대로 적용됩니다. 회색 이어쓰기는 Tab으로 수락하고, 마지막
-          단어가 약어와 일치하면 Enter로 치환됩니다. 서버 제안은 아래에서 고른 기록지·필드 키에 맞는 과거 기록을 참고합니다.
+          위에서 바꾼 활성화 여부·단축어 사전이 저장하기 전에도 이 입력란에 그대로 적용됩니다. 회색 이어쓰기는 Tab으로 수락하고, 마지막
+          단어가 단축어와 일치하면 Enter로 치환됩니다. 서버 제안은 아래에서 고른 기록지·필드 키에 맞는 과거 기록을 참고합니다.
         </p>
         <div className="mt-3 flex flex-wrap gap-3">
           <label className="flex min-w-[10rem] flex-1 flex-col gap-1 text-xs font-medium text-gray-600">
@@ -179,38 +232,57 @@ function InputAssistSettingsSection({ token }: { token: string }) {
             <select
               value={testTemplateId}
               onChange={(e) => setTestTemplateId(e.target.value as VoiceRecordTemplateId)}
+              disabled={templatesQuery.isLoading || templateIds.length === 0}
               className="h-9 rounded-md border border-gray-300 bg-white px-2 text-sm"
             >
-              {VOICE_RECORD_TEMPLATES.map((id) => (
+              {templateIds.map((id) => (
                 <option key={id} value={id}>
-                  {id}
+                  {templatesQuery.data?.[id]?.displayTitle || id}
                 </option>
               ))}
             </select>
           </label>
           <label className="flex min-w-[8rem] flex-1 flex-col gap-1 text-xs font-medium text-gray-600">
             필드 키
-            <input
-              type="text"
+            <select
               value={testFieldKey}
               onChange={(e) => setTestFieldKey(e.target.value)}
-              placeholder="예: situation"
+              disabled={testFieldOptions.length === 0}
               className="h-9 rounded-md border border-gray-300 bg-white px-2 text-sm"
-            />
+            >
+              {testFieldOptions.map((option) => (
+                <option key={option.fieldKey} value={option.fieldKey}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
           </label>
         </div>
+        {templatesQuery.error ? (
+          <p className="mt-3 text-xs text-red-600">
+            {templatesQuery.error instanceof Error
+              ? templatesQuery.error.message
+              : "템플릿을 불러오지 못했습니다."}
+          </p>
+        ) : null}
         <div className="mt-3">
-          <InputAssistField
-            templateId={testTemplateId}
-            fieldKey={testFieldKey.trim() || "situation"}
-            value={testAssistText}
-            onChange={setTestAssistText}
-            multiline
-            rows={4}
-            placeholder="두 글자 이상 입력하면 제안이 요청됩니다. 약어는 공백 뒤 토큰으로 입력한 뒤 Enter."
-            className="min-h-[100px] w-full resize-y rounded-md border border-gray-300 bg-white px-3 py-2 text-sm"
-            settingsOverride={inputAssistSettingsOverride}
-          />
+          {testTemplateId && testFieldKey ? (
+            <InputAssistField
+              templateId={testTemplateId}
+              fieldKey={testFieldKey}
+              value={testAssistText}
+              onChange={setTestAssistText}
+              multiline
+              rows={4}
+              placeholder="두 글자 이상 입력하면 제안이 요청됩니다. 약어는 공백 뒤 토큰으로 입력한 뒤 Enter."
+              className="min-h-[100px] w-full resize-y rounded-md border border-gray-300 bg-white px-3 py-2 text-sm"
+              settingsOverride={inputAssistSettingsOverride}
+            />
+          ) : (
+            <div className="flex min-h-[100px] items-center justify-center rounded-md border border-gray-200 bg-white px-3 text-center text-sm text-gray-500">
+              테스트할 기록지와 필드를 불러오지 못했습니다.
+            </div>
+          )}
           <button
             type="button"
             onClick={() => setTestAssistText("")}
@@ -223,13 +295,13 @@ function InputAssistSettingsSection({ token }: { token: string }) {
 
       <div className="mt-6">
         <div className="mb-2 flex items-center justify-between gap-3">
-          <p className="text-sm font-semibold text-gray-900">dot 약어 사전</p>
+          <p className="text-sm font-semibold text-gray-900">단축어 사전</p>
           <button
             type="button"
             onClick={addEntry}
             className="rounded-md border border-blue-200 bg-blue-50 px-3 py-1 text-xs font-semibold text-blue-700"
           >
-            약어 추가
+            단축어 추가
           </button>
         </div>
         <p className="mb-3 text-xs text-gray-500">
@@ -243,7 +315,7 @@ function InputAssistSettingsSection({ token }: { token: string }) {
                 value={entry.trigger}
                 onChange={(e) => updateEntry(index, { trigger: e.target.value })}
                 className="h-10 rounded-md border border-gray-300 px-3 text-sm"
-                placeholder=".약어"
+                placeholder=".단축어"
               />
               <input
                 type="text"
@@ -262,7 +334,7 @@ function InputAssistSettingsSection({ token }: { token: string }) {
             </div>
           ))}
           {!entries.length ? (
-            <p className="text-xs text-gray-500">등록된 약어가 없습니다.</p>
+            <p className="text-xs text-gray-500">등록된 단축어가 없습니다.</p>
           ) : null}
         </div>
       </div>
@@ -286,17 +358,37 @@ function AccountSettingsSection({
   user,
   token,
   onProfileSaved,
+  onEnterAdminMode,
 }: {
   user: AuthUser;
   token: string;
   onProfileSaved: () => void;
+  onEnterAdminMode: () => void;
 }) {
   const isAdmin = user.role === "admin";
   return (
     <div className="space-y-8">
       <ProfileSettingsForm user={user} token={token} onProfileSaved={onProfileSaved} />
+      {isAdmin ? (
+        <section className="rounded-xl border border-blue-100 bg-blue-50/70 p-4 shadow-sm sm:p-6">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h2 className="text-base font-semibold text-gray-900">관리자 권한</h2>
+              <p className="mt-1 text-xs text-gray-600">
+                관리자 계정은 이곳에서 어드민 모드로 전환할 수 있습니다.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={onEnterAdminMode}
+              className="h-10 rounded-lg bg-slate-900 px-4 text-sm font-semibold text-white hover:bg-slate-800"
+            >
+              어드민 모드로 전환
+            </button>
+          </div>
+        </section>
+      ) : null}
       {!isAdmin ? <NurseVerificationSection user={user} token={token} /> : null}
-      {isAdmin ? <AdminUserManagementPanel token={token} actorUser={user} /> : null}
     </div>
   );
 }

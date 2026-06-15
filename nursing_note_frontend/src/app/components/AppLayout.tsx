@@ -6,7 +6,6 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
-  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/app/components/ui/dropdown-menu";
 import { ROUTES } from "@/app/navigation/routes";
@@ -34,8 +33,8 @@ function BottomTabBar() {
   const activeId = getSidebarActiveId(location.pathname);
 
   return (
-    <nav className="fixed inset-x-0 bottom-0 z-30 border-t border-[#E5E7EB] bg-white/95 px-2 pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-2 shadow-[0_-4px_12px_rgba(17,24,39,0.06)] backdrop-blur lg:hidden">
-      <div className="mx-auto grid max-w-md grid-cols-5">
+    <nav className="fixed bottom-0 left-1/2 z-30 min-h-[80px] w-full max-w-[393px] -translate-x-1/2 border-t border-[#E5E7EB] bg-white/95 px-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] pt-2 shadow-[0_-4px_12px_rgba(17,24,39,0.06)] backdrop-blur lg:hidden">
+      <div className="mx-auto grid h-[63px] grid-cols-5">
         {bottomNavItems.map((item) => {
           const active = activeId === item.id;
           return (
@@ -43,7 +42,7 @@ function BottomTabBar() {
               key={item.id}
               type="button"
               onClick={() => navigate(item.path)}
-              className={`flex min-h-[56px] flex-col items-center justify-center gap-1 rounded-lg text-[11px] font-medium transition-colors ${
+              className={`flex h-[56px] flex-col items-center justify-center gap-1 text-[11px] font-medium transition-colors ${
                 active ? "text-[#2563EB]" : "text-[#6B7280] hover:text-[#111827]"
               }`}
               aria-current={active ? "page" : undefined}
@@ -91,14 +90,6 @@ export default function AppLayout() {
                   </button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end" className="min-w-[10rem]">
-                  {user.role === "admin" ? (
-                    <>
-                      <DropdownMenuItem onSelect={() => navigate(ROUTES.adminRoot)}>
-                        관리자 페이지로 이동
-                      </DropdownMenuItem>
-                      <DropdownMenuSeparator />
-                    </>
-                  ) : null}
                   <DropdownMenuItem onSelect={() => navigate(ROUTES.settings)}>
                     내 정보
                   </DropdownMenuItem>
@@ -118,7 +109,7 @@ export default function AppLayout() {
           </div>
         </header>
 
-        <main className="mobile-safe-bottom flex-1 overflow-y-auto overscroll-contain px-5 pt-[max(1.5rem,env(safe-area-inset-top))] sm:px-6 md:px-8 lg:px-10 lg:py-10 lg:pb-10">
+        <main className="mobile-safe-bottom mx-auto w-full max-w-[393px] flex-1 overflow-y-auto overscroll-contain px-5 pt-[max(1.5rem,env(safe-area-inset-top))] lg:max-w-none lg:px-10 lg:py-10 lg:pb-10">
           <Outlet />
         </main>
         <BottomTabBar />

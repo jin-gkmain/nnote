@@ -12,6 +12,7 @@ import { TemplatesModule } from './templates/templates.module';
 import { UsersModule } from './users/users.module';
 import { AbbreviationsModule } from './settings/abbreviations.module';
 import { AiSearchModule } from './ai-search/ai-search.module';
+import { InquiriesModule } from './inquiries/inquiries.module';
 
 @Module({
   imports: [
@@ -30,6 +31,7 @@ import { AiSearchModule } from './ai-search/ai-search.module';
     AiDraftModule,
     AiSearchModule,
     SttModule,
+    InquiriesModule,
   ],
 })
 export class AppModule {}

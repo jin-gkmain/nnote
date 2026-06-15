@@ -146,3 +146,20 @@ CREATE TABLE IF NOT EXISTS records (
   KEY idx_records_type    (record_type),
   KEY idx_records_date    (record_date)
 ) ENGINE=InnoDB COMMENT='통합 기록 (JSON + record_type)';
+
+-- -----------------------------------------------------
+-- 6. 고객 문의
+-- -----------------------------------------------------
+CREATE TABLE IF NOT EXISTS inquiries (
+  id              BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  member_login_id VARCHAR(64)     NULL DEFAULT NULL COMMENT '회원 문의 시 로그인 ID',
+  reply_email     VARCHAR(255)    NOT NULL COMMENT '답변 수신 이메일',
+  title           VARCHAR(200)    NOT NULL COMMENT '문의 제목',
+  content         TEXT            NOT NULL COMMENT '문의 내용',
+  status          ENUM('pending','in_progress','completed') NOT NULL DEFAULT 'pending',
+  created_at      TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at      TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  KEY idx_inquiries_status_created_at (status, created_at),
+  KEY idx_inquiries_created_at (created_at)
+) ENGINE=InnoDB COMMENT='고객 문의';

@@ -12,6 +12,10 @@ export const queryKeys = {
   users: {
     all: (token: string | null) => ["users", token ?? "anonymous"] as const,
   },
+  inquiries: {
+    list: (token: string | null, sort: string) =>
+      ["inquiries", "list", sort, token ?? "anonymous"] as const,
+  },
   templates: {
     map: ["templates", "ui-config"] as const,
     merged: (templateId: string) => ["templates", "merged", templateId] as const,

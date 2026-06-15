@@ -8,8 +8,10 @@ export const ROUTES = {
   ocr: "/ocr",
   settings: "/settings",
   login: "/login",
+  inquiry: "/inquiry",
   adminRoot: "/admin",
   adminTeam: "/admin/team",
   adminTemplates: "/admin/templates",
+  adminInquiries: "/admin/inquiries",
   adminSettings: "/admin/settings",
 } as const;

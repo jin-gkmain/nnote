@@ -51,6 +51,8 @@ export interface TemplateUiConfigMeta {
   version?: number;
   sourceSheet?: string;
   institution?: string;
+  sectionCount?: number;
+  fieldCount?: number;
   sections: TemplateSectionMap | null;
   createdAt: string | null;
   updatedAt: string | null;
@@ -107,6 +109,10 @@ interface TemplateApiListItem {
   sourceSheet: string;
   institution: string;
   isActive: boolean;
+  sectionCount: number;
+  fieldCount: number;
+  createdAt: string;
+  updatedAt: string;
 }
 
 interface TemplateApiDetail extends TemplateApiListItem {
@@ -273,16 +279,6 @@ export function normalizeStoredSectionMap(value: unknown): TemplateSectionMap | 
   return hasAny ? out : null;
 }
 
-export function fallbackSectionMapFromTemplateDefaults(
-  _templateId: string,
-): TemplateSectionMap {
-  return {
-    "기본 항목": {
-      content: { type: "text_long", description: "템플릿 정의를 불러오지 못했습니다." },
-    },
-  };
-}
-
 export function mergeTemplateFieldOverrides(
   _templateId: string,
   serverSections: TemplateSectionMap | null | undefined,
@@ -344,37 +340,41 @@ function apiDetailToMeta(detail: TemplateApiDetail): TemplateUiConfigMeta {
     version: detail.version,
     sourceSheet: detail.sourceSheet,
     institution: detail.institution,
+    sectionCount: detail.sectionCount,
+    fieldCount: detail.fieldCount,
     sections,
-    createdAt: null,
-    updatedAt: null,
+    createdAt: detail.createdAt || null,
+    updatedAt: detail.updatedAt || null,
   };
 }
 
 export async function fetchTemplateUiConfigMap(): Promise<TemplateUiConfigMap> {
-  try {
-    const res = await fetch("/api/templates");
-    if (!res.ok) return {};
-    const list = (await res.json()) as TemplateApiListItem[];
-    const details = await Promise.all(
-      list.map(async (item) => {
-        const detailRes = await fetch(`/api/templates/${encodeURIComponent(item.templateId)}`);
-        if (!detailRes.ok) return null;
-        return (await detailRes.json()) as TemplateApiDetail;
-      }),
-    );
-    const map: TemplateUiConfigMap = {};
-    for (const detail of details) {
-      if (!detail) continue;
-      map[detail.templateId] = apiDetailToMeta(detail);
-    }
-    return map;
-  } catch {
-    return {};
+  const res = await fetch("/api/templates");
+  if (!res.ok) throw new Error("템플릿 목록을 불러오지 못했습니다.");
+  const list = (await res.json()) as TemplateApiListItem[];
+  const details = await Promise.all(
+    list.map(async (item) => {
+      const detailRes = await fetch(`/api/templates/${encodeURIComponent(item.templateId)}`);
+      if (!detailRes.ok) {
+        throw new Error(`템플릿 「${item.templateId}」을 불러오지 못했습니다.`);
+      }
+      return (await detailRes.json()) as TemplateApiDetail;
+    }),
+  );
+  const map: TemplateUiConfigMap = {};
+  for (const detail of details) {
+    map[detail.templateId] = apiDetailToMeta(detail);
   }
+  return map;
 }
 
-export async function fetchTemplateSectionPresets(_token: string): Promise<TemplateSectionPreset[]> {
-  return [];
+export async function fetchTemplateSectionPresets(token: string): Promise<TemplateSectionPreset[]> {
+  const res = await fetch("/api/settings/template-ui/presets", {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error("템플릿 섹션 프리셋을 불러오지 못했습니다.");
+  const data = (await res.json()) as TemplateSectionPreset[];
+  return Array.isArray(data) ? data : [];
 }
 
 export function fieldConfigsToSectionMap(fields: TemplateUiFieldConfig[]): TemplateSectionMap {

@@ -58,15 +58,25 @@ function hasOption(field: TemplateFieldEffective, optionKey: string): boolean {
 }
 
 function numberNearPain(text: string): string {
-  const painAnswerText = text
-    .split(/(?<=요\.|다\.|요\?|까\?)/)
-    .map((line) => line.trim())
-    .filter((line) => !/0점부터\s*10점|10점까지|10점\s*만점/.test(line))
-    .filter((line) => /(아프|아파|통증|점\s*정도|움직|가만히)/.test(line))
-    .join(" ");
-  const values = [...painAnswerText.matchAll(/(\d{1,2})(?:\s*점|\s*\/\s*10|점\s*정도)/g)]
-    .map((m) => Number(m[1]))
-    .filter((n) => Number.isFinite(n) && n >= 0 && n <= 10);
+  const source = normalizeClinicalText(text);
+  const values = [...source.matchAll(/(\d{1,2})(?:\s*점|\s*\/\s*10|점\s*정도)/g)]
+    .map((match) => {
+      const score = Number(match[1]);
+      const start = Math.max(0, (match.index ?? 0) - 35);
+      const end = Math.min(source.length, (match.index ?? 0) + match[0].length + 35);
+      return { score, context: source.slice(start, end) };
+    })
+    .filter(({ score }) => Number.isFinite(score) && score >= 0 && score <= 10)
+    .filter(
+      ({ score, context }) =>
+        !(
+          (score === 0 || score === 10) &&
+          /하나도\s*안\s*아픈|최고의?\s*통증|참기\s*힘든|만점|0점부터|10점까지/.test(
+            context,
+          )
+        ),
+    )
+    .map(({ score }) => score);
   return values.length > 0 ? String(Math.max(...values)) : "";
 }
 

@@ -31,6 +31,14 @@ export default function AdminHomePage() {
     return <p className="text-sm text-red-600">{message}</p>;
   }
 
+  if (usersQuery.isLoading || templatesQuery.isLoading) {
+    return (
+      <div className="flex min-h-[40vh] items-center justify-center text-sm text-gray-500">
+        관리자 데이터를 불러오는 중입니다.
+      </div>
+    );
+  }
+
   return (
     <div className="flex w-full min-w-0 flex-col gap-6">
       <h1 className="text-xl font-bold text-gray-900 sm:text-2xl">관리자 홈</h1>

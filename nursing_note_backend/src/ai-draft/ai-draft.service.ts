@@ -180,9 +180,9 @@ export class AiDraftService {
 - multi_select: 값은 allowedKeys에 있는 키들만 쉼표(,)로 연결한 문자열이거나 빈 문자열("")입니다. (예: "키A,키B"). 순서는 자유이나 키는 allowedKeys만 사용합니다.
 - allowedKeys에 없는 표현은 임의로 새 선택지를 만들지 말고, 명확히 대응되지 않으면 빈 문자열("")로 둡니다.
 - inputSources에 STT가 없는 필드는 STT 원문만으로는 채우지 말고, 원문에 명시 근거가 있을 때만 채웁니다.
-- 원문에 해당 항목이 언급되지 않았고 allowedKeys에 "없음", "해당 없음" 또는 "기본"이라고 표시된 옵션이 있으면 그 값을 기본값으로 사용합니다.
+- 원문에 해당 항목이 언급되지 않았으면 allowedKeys에 "없음", "해당 없음" 또는 기본 옵션이 있더라도 빈 문자열("")로 둡니다.
 - "있음"은 원문에 해당 증상/병력/상태가 명시적으로 있을 때만 선택합니다. 언급이 없으면 "있음"을 선택하지 마세요.
-- "가족력", "알레르기", "호흡기 증상", "부종", "종교", "흡연/음주", "보호자", "퇴원 예정"처럼 대화에 나오지 않은 항목은 추측하지 말고 기본값/없음/공백으로 둡니다.
+- "가족력", "알레르기", "호흡기 증상", "부종", "종교", "흡연/음주", "보호자", "퇴원 예정"처럼 대화에 나오지 않은 항목은 추측하지 말고 반드시 공백으로 둡니다.
 - 상위 항목이 "없음" 또는 공백인 경우 하위 상세 항목은 반드시 공백입니다.
 `
       : '';
@@ -242,6 +242,7 @@ ${hintGuide}
 다른 설명·마크다운·코드펜스 없이 JSON만 출력하세요.`;
     const parsed = await this.callClovaApi(systemPrompt, text);
     const out: Record<string, string> = {};
+    const isSttInput = text.includes('[음성 STT 원문]');
     const hintMap = new Map(
       (structuredHints ?? [])
         .filter((h) => h?.key && h?.value && Number(h.confidence ?? 0) >= 0.8)
@@ -249,7 +250,13 @@ ${hintGuide}
     );
     for (const f of fields) {
       const v = parsed[f.key];
-      const normalized = this.normalizeTemplateFillValue(v, f, evidenceText);
+      const acceptsStt =
+        !f.inputSources?.length ||
+        f.inputSources.some((source) => source.toUpperCase() === 'STT');
+      const normalized =
+        isSttInput && !acceptsStt
+          ? ''
+          : this.normalizeTemplateFillValue(v, f, evidenceText);
       const hinted = this.normalizedStructuredHintValue(
         hintMap.get(f.key),
         f,
@@ -342,9 +349,15 @@ ${hintGuide}
         (vt === 'single_select' || vt === 'multi_select') &&
         keys.length > 0
       ) {
-        return (
-          this.inferChoiceValueFromEvidence(field, evidenceText) ||
-          this.explicitDefaultChoiceValue(field)
+        return this.inferChoiceValueFromEvidence(field, evidenceText);
+      }
+      if (vt === 'number') {
+        return this.extractPainScoreForField(field, evidenceText);
+      }
+      if (this.isTextField(field)) {
+        return this.normalizeDeclarativeFieldText(
+          this.inferTextValueFromEvidence(field, evidenceText),
+          field,
         );
       }
       return '';
@@ -353,11 +366,14 @@ ${hintGuide}
     if (!text) {
       const inferredChoice = this.inferChoiceValueFromEvidence(field, evidenceText);
       if (inferredChoice) return inferredChoice;
-      if (vt === 'single_select' && keys.length > 0) {
-        return this.explicitDefaultChoiceValue(field);
+      if (vt === 'number') {
+        return this.extractPainScoreForField(field, evidenceText);
       }
-      if (vt === 'multi_select' && keys.length > 0) {
-        return this.explicitDefaultChoiceValue(field);
+      if (this.isTextField(field)) {
+        return this.normalizeDeclarativeFieldText(
+          this.inferTextValueFromEvidence(field, evidenceText),
+          field,
+        );
       }
       return '';
     }
@@ -372,16 +388,12 @@ ${hintGuide}
     if (vt === 'single_select' && keys.length > 0) {
       if (!allowed.has(text)) return '';
       const inferredChoice = this.inferChoiceValueFromEvidence(field, evidenceText);
-      const defaultValue = this.explicitDefaultChoiceValue(field);
-      if (inferredChoice && text === defaultValue && inferredChoice !== defaultValue) {
+      if (inferredChoice && text !== inferredChoice) {
         return inferredChoice;
       }
       if (this.hasChoiceEvidence(text, field, evidenceText)) {
         return text;
       }
-      return defaultValue;
-    }
-    if (this.isGenericPlaceholderValue(text, field, evidenceText)) {
       return '';
     }
     if (vt === 'number') {
@@ -392,14 +404,12 @@ ${hintGuide}
       }
       return this.normalizeNumberTemplateValue(text, field);
     }
+    if (this.isGenericPlaceholderValue(text, field, evidenceText)) {
+      return '';
+    }
     const lowerLabel = `${field.key} ${field.label}`.toLowerCase();
     const inferredText = this.inferTextValueFromEvidence(field, evidenceText);
-    if (
-      inferredText &&
-      (!text ||
-        this.isGenericPlaceholderValue(text, field, evidenceText) ||
-        this.isLikelyQuestionInsteadOfAnswer(text, field))
-    ) {
+    if (inferredText && this.isTextField(field)) {
       return this.normalizeDeclarativeFieldText(inferredText, field);
     }
     if (/(혈압|blood pressure|bp)/i.test(lowerLabel)) {
@@ -450,18 +460,31 @@ ${hintGuide}
     field: TemplateFieldSpecDto,
     evidenceText: string,
   ): string {
-    const fieldText = this.fieldSearchText(field);
+    const fieldText = this.fieldIdentityText(field);
     if (!/(통증\s*강도|pain.*score|nrs|npis|점수|score)/i.test(fieldText)) {
       return '';
     }
-    const candidates = this.splitEvidenceSentences(evidenceText)
-      .filter((sentence) => !/0점부터\s*10점|10점까지|10점\s*만점/.test(sentence))
-      .filter((sentence) => /(아프|아파|통증|점\s*정도|움직|가만히)/.test(sentence))
-      .flatMap((sentence) =>
-        [...sentence.matchAll(/(\d{1,2})(?:\s*점|\s*\/\s*10|점\s*정도)/g)]
-          .map((m) => Number(m[1]))
-          .filter((n) => Number.isFinite(n) && n >= 0 && n <= 10),
-      );
+    const source = evidenceText.replace(/\s+/g, ' ');
+    const candidates = [
+      ...source.matchAll(/(\d{1,2})(?:\s*점|\s*\/\s*10|점\s*정도)/g),
+    ]
+      .map((match) => {
+        const score = Number(match[1]);
+        const start = Math.max(0, (match.index ?? 0) - 35);
+        const end = Math.min(source.length, (match.index ?? 0) + match[0].length + 35);
+        return { score, context: source.slice(start, end) };
+      })
+      .filter(({ score }) => Number.isFinite(score) && score >= 0 && score <= 10)
+      .filter(
+        ({ score, context }) =>
+          !(
+            (score === 0 || score === 10) &&
+            /하나도\s*안\s*아픈|최고의?\s*통증|참기\s*힘든|만점|0점부터|10점까지/.test(
+              context,
+            )
+          ),
+      )
+      .map(({ score }) => score);
     return candidates.length > 0 ? String(Math.max(...candidates)) : '';
   }
 
@@ -503,7 +526,7 @@ ${lines.join('\n')}`;
   }
 
   private describeFieldTarget(field: TemplateFieldSpecDto): string {
-    const fieldText = this.fieldSearchText(field);
+    const fieldText = this.fieldIdentityText(field);
     if (/통증\s*강도|pain.*score|nrs|npis|점수/i.test(fieldText)) {
       return '통증 점수/강도(0-10 등), 여러 숫자가 있으면 가장 심한 통증 점수';
     }
@@ -596,7 +619,7 @@ ${lines.join('\n')}`;
   }
 
   private evidencePatternsForField(field: TemplateFieldSpecDto): RegExp[] {
-    const fieldText = this.fieldSearchText(field);
+    const fieldText = this.fieldIdentityText(field);
     const patterns: RegExp[] = [];
     const add = (items: RegExp[]) => patterns.push(...items);
     if (/통증|pain|npis|nrs|점수/i.test(fieldText)) add([/통증|아프|아파|아픈|쑤시|찌르|점\s*정도|움직/i]);
@@ -637,6 +660,17 @@ ${lines.join('\n')}`;
       .join(' ');
   }
 
+  private fieldIdentityText(field: TemplateFieldSpecDto): string {
+    return [
+      field.key,
+      field.label,
+      field.aiHint,
+      field.sourceDefinition,
+    ]
+      .map((v) => String(v ?? ''))
+      .join(' ');
+  }
+
   private meaningfulLabelTerms(label: string): string[] {
     return label
       .split(/[·>\/(),\s-]+/)
@@ -659,7 +693,9 @@ ${lines.join('\n')}`;
     const marker = '[음성 STT 원문]';
     const idx = text.indexOf(marker);
     const raw = idx >= 0 ? text.slice(idx + marker.length) : text;
-    const nextMarker = raw.search(/\n\s*\[/);
+    const nextMarker = raw.search(
+      /\n\s*\[(?:공통 추출 정보|규칙 기반 사전 매칭 힌트)\]/,
+    );
     return (nextMarker >= 0 ? raw.slice(0, nextMarker) : raw)
       .replace(/\s+/g, ' ')
       .trim();
@@ -691,35 +727,77 @@ ${lines.join('\n')}`;
     const source = evidenceText.replace(/\s+/g, ' ').trim();
     if (!source) return false;
 
-    const defaultValue = this.explicitDefaultChoiceValue(field);
-    if (selectedKey === defaultValue) return true;
-
     const label = this.optionLabel(field, selectedKey);
-    const fieldText = `${field.key} ${field.label} ${field.description ?? ''} ${field.aiHint ?? ''} ${field.sourceDefinition ?? ''}`;
+    const fieldText = this.fieldIdentityText(field);
     if (this.isNoneChoice(selectedKey) || this.isNoneChoice(label)) {
       return this.hasNegativeEvidenceForField(field, source);
     }
-    if (this.includesMeaningfulTerm(source, selectedKey) || this.includesMeaningfulTerm(source, label)) {
-      return true;
+
+    if (/소화기|연하|오심|구토|복부|속쓰림|토혈|삼킴/i.test(fieldText)) {
+      const digestivePatterns: Record<string, RegExp> = {
+        오심: /(오심|구역|메스꺼|속이\s*울렁)/,
+        구토: /(구토|토했|토함)/,
+        토혈: /토혈/,
+        연하곤란: /(연하곤란|삼키기\s*어려|삼킴\s*곤란)/,
+        소화불량: /소화불량/,
+        속쓰림: /속쓰림/,
+        통증: /(복통|복부\s*통증|배가\s*아)/,
+        복부팽만: /복부\s*팽만|배가\s*부풀/,
+        복수: /복수/,
+      };
+      return digestivePatterns[selectedKey]?.test(source) ?? false;
     }
 
     if (/통증|통증부위|통증양상|pain/i.test(fieldText)) {
+      if (/통증평가도구|pain.*tool|npis|nrs/i.test(fieldText)) {
+        return (
+          /NPIS|NRS|Numerical/i.test(`${selectedKey} ${label}`) &&
+          /0점부터\s*10점|10점까지|\d+\s*점/.test(source)
+        );
+      }
+      if (/통증부위|pain.*site/i.test(fieldText)) {
+        if (selectedKey === '상세부위') {
+          return /(수술\s*부위|상처\s*부위|복부|가슴|허리|머리|관절|전신)/.test(source);
+        }
+        return this.includesMeaningfulTerm(source, selectedKey);
+      }
+      if (/통증양상|pain.*quality/i.test(fieldText)) {
+        if (selectedKey === '쑤심') return /(욱신|쑤시|쑤심)/.test(source);
+        if (selectedKey === '찌르는듯함') return /(찌르|콕콕)/.test(source);
+        if (selectedKey === '퍼짐') return /(퍼지|방사)/.test(source);
+        if (selectedKey === '둔함') return /(둔하|묵직)/.test(source);
+        if (selectedKey === '예리함') return /(예리|날카)/.test(source);
+        return false;
+      }
       return /(통증|아프|아파|아픈|욱신|쑤시|쑤심|당기|땅기|찌르|저리|불편|수술\s*부위)/i.test(source);
     }
     if (/수면|잠|sleep/i.test(fieldText)) {
       return /(잠|수면|깼|깨다|못\s*잤|불면)/i.test(source);
     }
-    if (/오심|구토|구역|nausea|vomit/i.test(fieldText)) {
-      return /(오심|구역|메스꺼|구토|토했)/i.test(source);
-    }
     if (/호흡|객담|기침|숨|respir/i.test(fieldText)) {
-      if (/기침/.test(source) && /통증|아프|점|올라가|심하/i.test(source)) {
-        return false;
+      if (selectedKey === '기침') {
+        return this.splitEvidenceSentences(source).some(
+          (sentence) =>
+            /기침/.test(sentence) &&
+            !/(통증|아프|점|올라가|심하|악화)/.test(sentence),
+        );
       }
-      return /(호흡|숨|기침|객담|가래|숨차|호흡곤란)/i.test(source);
+      const respiratoryPatterns: Record<string, RegExp> = {
+        호흡곤란: /(호흡곤란|숨차|숨이\s*차|숨쉬기\s*힘)/,
+        객담: /(객담|가래)/,
+        기좌호흡: /(기좌호흡|앉아야\s*숨)/,
+      };
+      return respiratoryPatterns[selectedKey]?.test(source) ?? false;
     }
     if (/부종|edema/i.test(fieldText)) {
-      return /(부종|붓|부었|붓기|edema)/i.test(source);
+      if (selectedKey === '있음') {
+        return this.splitEvidenceSentences(source).some(
+          (sentence) =>
+            /(부종|붓|부었|붓기|edema)/i.test(sentence) &&
+            !/(없|않|안\s*붓|붓지\s*않|붓지는\s*않)/.test(sentence),
+        );
+      }
+      return this.includesMeaningfulTerm(source, selectedKey);
     }
     if (/가족력|family/i.test(fieldText)) {
       return /(가족력|가족.*병|부모.*병|형제.*병)/i.test(source);
@@ -734,13 +812,50 @@ ${lines.join('\n')}`;
       return /(흡연|담배|smok)/i.test(source);
     }
     if (/음주|drink|alcohol/i.test(fieldText)) {
-      return /(음주|술|drink|alcohol)/i.test(source);
+      if (!/(음주|소주|맥주|막걸리|와인|술을|술은|술도|술\s*드|금주)/i.test(source)) {
+        return false;
+      }
+      if (selectedKey === 'nondrinker') return /(비음주|술.*안|금주|마시지\s*않)/.test(source);
+      if (selectedKey === 'ex-drinker') return /(과거.*음주|예전.*술|술.*끊|금주\s*중)/.test(source);
+      if (selectedKey === 'current drinker') return /(현재.*음주|술.*마시|소주|맥주|막걸리|와인)/.test(source);
+      return false;
     }
-    if (/소화기|연하|오심|구토|복부|속쓰림|토혈|삼킴/i.test(fieldText)) {
-      return /(소화|연하|삼키|오심|구토|토했|메스꺼|복부|속쓰림|토혈|복수|복부팽만)/i.test(source);
+    if (/퇴원\s*후\s*보호자|보호자|caregiver/i.test(fieldText)) {
+      const relationPatterns: Record<string, RegExp> = {
+        배우자: /(배우자|아내|남편|부인|와이프)/,
+        부: /(아버지|부친|아버님)/,
+        모: /(어머니|모친|어머님)/,
+        자녀: /(자녀|아들|딸)/,
+        조부: /(조부|할아버지)/,
+        조모: /(조모|할머니)/,
+        형제: /(형제|형|오빠|남동생)/,
+        자매: /(자매|언니|누나|여동생)/,
+        간병인: /간병인/,
+      };
+      return relationPatterns[selectedKey]?.test(source) ?? false;
     }
-    if (/보호자|퇴원|교통|caregiver|discharge/i.test(fieldText)) {
-      return /(보호자|배우자|자녀|퇴원|귀가|자택|구급차|자가|대중교통)/i.test(source);
+    if (/퇴원\s*예정지|discharge.*destination/i.test(fieldText)) {
+      if (!/(퇴원|귀가|전원)/.test(source)) return false;
+      return this.includesMeaningfulTerm(source, selectedKey);
+    }
+    if (/퇴원.*교통|교통\s*수단|transport/i.test(fieldText)) {
+      if (!/(퇴원|귀가|전원)/.test(source)) return false;
+      if (selectedKey === '자가') return /(자가용|차로|보호자\s*차)/.test(source);
+      return this.includesMeaningfulTerm(source, selectedKey);
+    }
+    if (/입원\s*및\s*수술\s*이력|수술\s*이력|과거병력|병력/i.test(fieldText)) {
+      if (selectedKey === '있음') {
+        return /(과거|예전|이전|\d+\s*년\s*전|받은\s*적|병력|이력)[^.!?。]{0,60}(입원|수술|진단)/.test(
+          source,
+        );
+      }
+      return this.includesMeaningfulTerm(source, selectedKey);
+    }
+    if (/부작용>|이상반응>/.test(fieldText)) {
+      return this.includesMeaningfulTerm(source, selectedKey);
+    }
+    if (this.includesMeaningfulTerm(source, selectedKey) || this.includesMeaningfulTerm(source, label)) {
+      return true;
     }
 
     return false;
@@ -750,7 +865,7 @@ ${lines.join('\n')}`;
     field: TemplateFieldSpecDto,
     source: string,
   ): boolean {
-    const fieldText = this.fieldSearchText(field);
+    const fieldText = this.fieldIdentityText(field);
     if (/통증|pain|npis|nrs/i.test(fieldText)) {
       return /(통증|아프|아픈\s*데)[^.!?。]{0,20}(없|않|안\s*아프|괜찮)/.test(source);
     }
@@ -833,16 +948,36 @@ ${lines.join('\n')}`;
     ]
       .map((item) => String(item ?? '').trim())
       .filter(Boolean);
-    if (metadataValues.some((item) => v === item || item.includes(v) || v.includes(item))) {
+    const normalizedValue = this.normalizeMetadataText(v);
+    if (
+      metadataValues.some((item) => {
+        const normalizedItem = this.normalizeMetadataText(item);
+        return (
+          normalizedValue === normalizedItem ||
+          normalizedItem.includes(normalizedValue) ||
+          normalizedValue.includes(normalizedItem)
+        );
+      })
+    ) {
       return !this.includesMeaningfulTerm(evidenceText, v);
     }
     if (/^(있음|기타|악화요인|완화요인|증상 시작시기|약물명\/1회 투여량\/1회 투여단위\/횟수\/용법 및 투여시간\/약품 코드\/유효함량)$/i.test(v)) {
       return !this.includesMeaningfulTerm(evidenceText, v);
     }
-    if (/\((범주형|자유서술형|수치형|날짜형)\s*[-—]/.test(v)) {
+    if (
+      /\(?\s*(범주형|자유서술형|수치형|날짜형)\s*[-—:]/.test(v) ||
+      /약품명\s*\/\s*1회\s*투여량|약품\s*코드\s*\/\s*유효함량/.test(v)
+    ) {
       return true;
     }
     return false;
+  }
+
+  private normalizeMetadataText(value: string): string {
+    return String(value)
+      .toLowerCase()
+      .replace(/[\s"'`()[\]{}·,:;|/\\_-]+/g, '')
+      .trim();
   }
 
   private isMetadataLikeValue(value: string, field: TemplateFieldSpecDto): boolean {
@@ -857,7 +992,7 @@ ${lines.join('\n')}`;
     if (!keys.length) return '';
     const has = (key: string) => keys.includes(key);
     const source = evidenceText.replace(/\s+/g, ' ').trim();
-    const fieldText = this.fieldSearchText(field);
+    const fieldText = this.fieldIdentityText(field);
 
     if (/통증|pain|npis|nrs/i.test(fieldText) && has('있음')) {
       if (/(통증|아프|아파|아픈|쑤시|찌르|욱신|점\s*정도|움직이면)/.test(source)) {
@@ -884,6 +1019,14 @@ ${lines.join('\n')}`;
       }
     }
 
+    if (/통증양상|pain.*quality/i.test(fieldText)) {
+      if (/(욱신|쑤시|쑤심)/.test(source) && has('쑤심')) return '쑤심';
+      if (/(찌르|콕콕)/.test(source) && has('찌르는듯함')) return '찌르는듯함';
+      if (/(퍼지|방사)/.test(source) && has('퍼짐')) return '퍼짐';
+      if (/(둔하|묵직)/.test(source) && has('둔함')) return '둔함';
+      if (/(예리|날카)/.test(source) && has('예리함')) return '예리함';
+    }
+
     if (/알레르|allerg/i.test(fieldText)) {
       if (/(알레르|알러지)/.test(source) && /(없|전혀|하나도|아니요|없으)/.test(source) && has('없음')) {
         return '없음';
@@ -896,8 +1039,13 @@ ${lines.join('\n')}`;
     }
 
     if (/입원\s*및\s*수술\s*이력|수술\s*이력|입원.*수술|과거병력|병력/i.test(fieldText)) {
-      if (/(수술|입원|진단|고혈압|당뇨|결핵|암|골다공증|부정맥)/.test(source)) {
-        if (/(없|처음|아예\s*처음)/.test(source) && has('없음')) return '없음';
+      if (/(과거|예전|이전|\d+\s*년\s*전|받은\s*적|병력|이력)/.test(source)) {
+        if (
+          /(입원|수술|병력|이력)[^.!?。]{0,30}(없|처음|받은\s*적\s*없)/.test(source) &&
+          has('없음')
+        ) {
+          return '없음';
+        }
         if (has('있음')) return '있음';
       }
     }
@@ -952,7 +1100,7 @@ ${lines.join('\n')}`;
     field: TemplateFieldSpecDto,
     evidenceText: string,
   ): string {
-    const fieldText = this.fieldSearchText(field);
+    const fieldText = this.fieldIdentityText(field);
     const source = evidenceText.replace(/\s+/g, ' ').trim();
     if (!source) return '';
 
@@ -965,11 +1113,17 @@ ${lines.join('\n')}`;
       return sentence;
     }
     if (/악화요인/i.test(fieldText)) {
+      if (/몸을\s*뒤척이거나\s*기침할\s*때/.test(source)) {
+        return '몸을 뒤척이거나 기침할 때 통증이 악화됨';
+      }
       const m = source.match(/(?:조금만\s*)?움직(?:이려고\s*)?하면[^.!?。]{0,50}(?:아파|통증|점)/);
       if (m) return this.truncateEvidence(m[0]);
       return this.bestEvidenceSentence(evidenceText, [/움직|기침|자세|악화|심해/]);
     }
     if (/완화요인/i.test(fieldText)) {
+      if (/가만히\s*누워\s*있으면/.test(source)) {
+        return '가만히 누워 있으면 통증이 완화됨';
+      }
       const m = source.match(/가만히\s*있으면[^.!?。]{0,50}(?:나은|완화|점)/);
       if (m) return this.truncateEvidence(m[0]);
       return this.bestEvidenceSentence(evidenceText, [/가만히|쉬면|완화|나아/]);
@@ -1061,7 +1215,7 @@ ${lines.join('\n')}`;
   ): boolean {
     const v = value.trim();
     if (!v) return false;
-    const fieldText = this.fieldSearchText(field);
+    const fieldText = this.fieldIdentityText(field);
     if (!this.isQuestionLikeSentence(v)) {
       return false;
     }

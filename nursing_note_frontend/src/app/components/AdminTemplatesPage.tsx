@@ -11,10 +11,18 @@ import {
 } from "@dnd-kit/core"
 import { SortableContext, arrayMove, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable"
 import { CSS } from "@dnd-kit/utilities"
-import { GripVertical, Plus, Trash2, X } from "lucide-react"
+import {
+  ArrowLeft,
+  ChevronRight,
+  Copy,
+  GripVertical,
+  Pencil,
+  Plus,
+  Trash2,
+  X,
+} from "lucide-react"
 import { useAuth } from "@/app/auth/auth-context"
 import {
-  fallbackSectionMapFromTemplateDefaults,
   isChoiceTemplateValueType,
   isValidRawTemplateValueType,
   normalizeStoredTemplateValueType,
@@ -29,7 +37,6 @@ import {
 import {
   BUILTIN_LOCKED_VOICE_TEMPLATE_IDS,
   isBuiltinLockedVoiceTemplate,
-  VOICE_RECORD_TEMPLATES,
   type VoiceRecordTemplateId,
 } from "@/app/data/voiceRecordTemplates"
 import {
@@ -83,16 +90,7 @@ const VALUE_TYPE_OPTIONS: TemplateValueType[] = [
   "section_note",
 ]
 /** 템플릿 추가 모달 기본값: 일반 필드는 options에 `{}`, choice 타입은 최소 1개 키 필요 */
-const DEFAULT_NEW_TEMPLATE_JSON = `{
-  "1. 기본 항목": {
-    "fieldA": { "type": "text_long", "description": "", "options": {} },
-    "중증도": {
-      "type": "single_select",
-      "description": "",
-      "options": { "경증": "", "중증": "", "중증도불명": "" }
-    }
-  }
-}`
+const DEFAULT_NEW_TEMPLATE_JSON = "{}"
 const CATEGORY_TABS: Array<{ id: PresetCategory; label: string }> = [
   { id: "common", label: "문서공통정보" },
   { id: "patient", label: "환자정보" },
@@ -131,33 +129,14 @@ function formatDateLabel(iso: string | null): string {
   })
 }
 
-function emptyTemplateSections(templateId: VoiceRecordTemplateId): TemplateSectionMap {
-  return {
-    [DEFAULT_COLUMNS_SECTION_NAME]: {
-      recordDate: { type: "date" },
-      recordTime: { type: "text_short" },
-    },
-    "1. 기본정보": {
-      name: { type: "text_short" },
-      age: { type: "number" },
-    },
-    "2. 상세정보": {
-      [`${templateId}-detail`]: { type: "text_long" },
-    },
-  }
-}
-
 function sectionsForAdminOverlay(
-  templateId: VoiceRecordTemplateId,
+  _templateId: VoiceRecordTemplateId,
   serverSections: TemplateSectionMap | null | undefined,
 ): TemplateSectionMap {
   if (serverSections && Object.keys(serverSections).length > 0) {
     return serverSections
   }
-  if (isBuiltinLockedVoiceTemplate(templateId)) {
-    return fallbackSectionMapFromTemplateDefaults(templateId)
-  }
-  return emptyTemplateSections(templateId)
+  return {}
 }
 
 function toDraftSections(map: TemplateSectionMap): TemplateSectionDraft[] {
@@ -538,6 +517,7 @@ export default function AdminTemplatesPage() {
   const [activeDragPreview, setActiveDragPreview] = useState<ActiveDragPreview | null>(null)
   const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState(false)
   const [deleteError, setDeleteError] = useState("")
+  const [sort, setSort] = useState<"latest" | "oldest">("latest")
 
   const templateMap = templatesQuery.data ?? {}
   /**
@@ -545,17 +525,20 @@ export default function AdminTemplatesPage() {
    * 시스템 잠금 양식(SOAP/SOAPIE/SBAR)을 항상 맨 앞에 고정하고, 그 외는 한국어 정렬.
    */
   const templateIds = useMemo(() => {
-    const all = templatesQuery.isSuccess
-      ? Object.keys(templateMap)
-      : Object.keys(templateMap).length > 0
-        ? Object.keys(templateMap)
-        : [...VOICE_RECORD_TEMPLATES]
+    const all = Object.keys(templateMap)
     const lockedFirst = BUILTIN_LOCKED_VOICE_TEMPLATE_IDS.filter((id) => all.includes(id))
     const rest = all
       .filter((id) => !BUILTIN_LOCKED_VOICE_TEMPLATE_IDS.includes(id))
       .sort((a, b) => a.localeCompare(b, "ko"))
-    return [...lockedFirst, ...rest]
-  }, [templateMap, templatesQuery.isSuccess])
+    const items = [...lockedFirst, ...rest]
+    return items.sort((a, b) => {
+      const aTime = new Date(templateMap[a]?.updatedAt ?? 0).getTime()
+      const bTime = new Date(templateMap[b]?.updatedAt ?? 0).getTime()
+      const delta = aTime - bTime
+      if (delta !== 0) return sort === "latest" ? -delta : delta
+      return a.localeCompare(b, "ko")
+    })
+  }, [templateMap, sort])
   const openedMeta = overlayTemplateId ? templateMap[overlayTemplateId] : null
   const openedSections = useMemo(() => {
     if (!overlayTemplateId) return {}
@@ -783,6 +766,31 @@ export default function AdminTemplatesPage() {
     }
   }
 
+  async function duplicateTemplate() {
+    if (!overlayTemplateId || !token || !user || user.role !== "admin") return
+    const suffix = new Date().toISOString().slice(0, 10).replaceAll("-", "")
+    const baseId = `${overlayTemplateId}-copy-${suffix}`
+    let templateId = baseId
+    let index = 2
+    while (templateMap[templateId]) {
+      templateId = `${baseId}-${index}`
+      index += 1
+    }
+    try {
+      await createTemplateMutation.mutateAsync({
+        templateId,
+        sections: openedSections,
+        displayTitle: `${
+          openedMeta?.displayTitle?.trim() || overlayTemplateId
+        } 복사본`,
+      })
+      setOverlayTemplateId(null)
+      setMessage(`"${templateId}" 템플릿을 복제했습니다.`)
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "템플릿 복제에 실패했습니다.")
+    }
+  }
+
   async function saveTemplate() {
     if (!overlayTemplateId || !token || !user || user.role !== "admin") return
     if (isBuiltinLockedVoiceTemplate(overlayTemplateId)) {
@@ -835,10 +843,28 @@ export default function AdminTemplatesPage() {
   )
 
   return (
-    <div className="flex w-full min-w-0 flex-col gap-4">
-      <h1 className="text-xl font-bold text-gray-900 sm:text-2xl">템플릿</h1>
+    <div className="mx-auto flex w-full max-w-6xl min-w-0 flex-col gap-4">
+      <div className="flex items-end justify-between gap-3">
+        <h1 className="text-2xl font-bold text-[#1f2024]">템플릿</h1>
+        <select
+          value={sort}
+          onChange={(event) => setSort(event.target.value as "latest" | "oldest")}
+          className="h-9 rounded-[5px] border border-[#e5e7eb] bg-white px-3 text-sm"
+          aria-label="템플릿 정렬"
+        >
+          <option value="latest">최신순</option>
+          <option value="oldest">오래된순</option>
+        </select>
+      </div>
       {!overlayTemplateId && message ? <p className="text-sm text-gray-700">{message}</p> : null}
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+      {templatesQuery.error ? (
+        <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+          {templatesQuery.error instanceof Error
+            ? templatesQuery.error.message
+            : "템플릿을 불러오지 못했습니다."}
+        </div>
+      ) : null}
+      <div className="flex flex-col gap-3 lg:grid lg:grid-cols-3 lg:gap-4 xl:grid-cols-4">
         {templateIds.map((templateId) => {
           const meta = templateMap[templateId]
           const displayLabel =
@@ -847,21 +873,45 @@ export default function AdminTemplatesPage() {
               : templateId
           const lockedBuiltin = isBuiltinLockedVoiceTemplate(templateId)
           return (
-            <div key={templateId} className="relative min-h-[200px] rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
+            <div key={templateId} className="relative min-h-[90px] rounded-[8px] border border-[#e5e7eb] bg-white p-4 lg:min-h-[180px]">
               <div className="flex flex-wrap items-center gap-2 pr-16">
-                <p className="text-sm font-semibold text-gray-900">{displayLabel}</p>
-                {lockedBuiltin ? (
-                  <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-slate-600">
-                    기본
-                  </span>
-                ) : null}
+                <span
+                  className={
+                    lockedBuiltin
+                      ? "rounded-sm border border-[#3b82f6] px-1.5 py-0.5 text-[10px] font-semibold text-[#155dfc]"
+                      : "rounded-sm bg-[#3b82f6] px-1.5 py-0.5 text-[10px] font-semibold text-white"
+                  }
+                >
+                  {lockedBuiltin ? "기본" : "커스텀"}
+                </span>
+                <p className="min-w-0 truncate text-sm font-semibold text-gray-900">{displayLabel}</p>
               </div>
               {displayLabel !== templateId ? (
                 <p className="mt-0.5 truncate text-xs text-gray-500" title={templateId}>
                   {templateId}
                 </p>
               ) : null}
-              <button type="button" onClick={() => openOverlay(templateId)} className="absolute right-3 bottom-3 rounded-lg border border-blue-200 px-3 py-1.5 text-xs font-medium text-blue-700 hover:bg-blue-50">자세히</button>
+              <p className="mt-2 text-xs text-gray-500">
+                섹션 {meta?.sectionCount ?? Object.keys(meta?.sections ?? {}).length}개 · 필드{" "}
+                {meta?.fieldCount ??
+                  Object.values(meta?.sections ?? {}).reduce(
+                    (count, fields) => count + Object.keys(fields).length,
+                    0,
+                  )}개
+              </p>
+              {meta?.updatedAt ? (
+                <p className="mt-1 text-[11px] text-gray-400">
+                  최근수정 {formatDateLabel(meta.updatedAt)}
+                </p>
+              ) : null}
+              <button
+                type="button"
+                onClick={() => openOverlay(templateId)}
+                className="absolute right-3 top-1/2 flex -translate-y-1/2 items-center gap-1 text-xs font-semibold text-[#155dfc] hover:underline lg:bottom-3 lg:top-auto lg:translate-y-0"
+              >
+                자세히 보기
+                <ChevronRight className="h-3.5 w-3.5" />
+              </button>
             </div>
           )
         })}
@@ -872,15 +922,24 @@ export default function AdminTemplatesPage() {
             setNewTemplateError("")
             setNewTemplateDisplayTitle("")
           }}
-          className="min-h-[200px] rounded-xl border border-dashed border-blue-300 bg-blue-50/50 p-4 text-left text-sm font-semibold text-blue-700 hover:bg-blue-100/50"
+          className="min-h-[64px] rounded-[8px] border border-dashed border-[#3b82f6] bg-blue-50/60 p-4 text-left text-sm font-semibold text-[#155dfc] hover:bg-blue-100/60 lg:min-h-[180px]"
         >
           + 새 템플릿(JSON) 추가
         </button>
       </div>
 
       {overlayTemplateId ? (
-        <div className="fixed top-[var(--nursing-app-header-offset)] right-0 bottom-0 left-0 z-[260] flex flex-col bg-white lg:left-[100px]">
-          <div className="flex items-center justify-between border-b border-gray-200 px-4 py-3">
+        <div className="fixed inset-x-0 bottom-[calc(68px+env(safe-area-inset-bottom))] top-0 z-[40] flex flex-col bg-[#f9fafb] lg:bottom-0 lg:left-[100px]">
+          <div className="border-b border-gray-200 bg-white px-5 pb-4 pt-[max(1rem,env(safe-area-inset-top))]">
+            <div className="grid grid-cols-[44px_1fr_44px] items-start">
+              <button
+                type="button"
+                onClick={() => setOverlayTemplateId(null)}
+                className="flex h-11 w-11 items-center justify-center rounded-md hover:bg-gray-100"
+                aria-label="템플릿 목록으로 돌아가기"
+              >
+                <ArrowLeft className="h-5 w-5" />
+              </button>
             <div className="min-w-0 flex-1 pr-3">
               {isEditing ? (
                 <label className="block">
@@ -895,21 +954,31 @@ export default function AdminTemplatesPage() {
                   />
                 </label>
               ) : (
-                <h2 className="truncate text-lg font-bold text-gray-900">
+                <h2 className="truncate text-center text-xl font-bold text-gray-900">
                   {openedMeta?.displayTitle != null && String(openedMeta.displayTitle).trim() !== ""
                     ? String(openedMeta.displayTitle).trim()
                     : overlayTemplateId}
                 </h2>
               )}
-              <p className="mt-1 truncate text-xs text-gray-500" title={overlayTemplateId}>
+              <p className="mt-2 truncate text-center text-xs text-gray-500" title={overlayTemplateId}>
                 템플릿 ID: {overlayTemplateId}
               </p>
-              <div className="mt-1 flex flex-wrap gap-3 text-xs text-gray-500">
+              <div className="mt-1 flex flex-wrap justify-center gap-3 text-xs text-gray-400">
                 <span>생성일자: {formatDateLabel(openedMeta?.createdAt ?? null)}</span>
                 <span>수정일자: {formatDateLabel(openedMeta?.updatedAt ?? null)}</span>
               </div>
             </div>
-            <div className="flex flex-wrap items-center gap-2">
+            <span />
+            </div>
+            <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
+              <button
+                type="button"
+                onClick={() => void duplicateTemplate()}
+                className="inline-flex h-10 items-center gap-1.5 rounded-[5px] border border-[#e5e7eb] bg-white px-3 text-sm font-semibold text-gray-600 hover:bg-gray-50"
+              >
+                <Copy className="h-4 w-4" />
+                복제하기
+              </button>
               {!overlayIsBuiltinLocked ? (
                 <>
                   {!isEditing ? (
@@ -921,8 +990,9 @@ export default function AdminTemplatesPage() {
                         setIsEditing(true)
                         setMessage("")
                       }}
-                      className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700"
+                      className="inline-flex h-10 items-center gap-1.5 rounded-[5px] bg-[#3b82f6] px-4 text-sm font-semibold text-white hover:bg-blue-600"
                     >
+                      <Pencil className="h-4 w-4" />
                       수정하기
                     </button>
                   ) : (
@@ -934,8 +1004,9 @@ export default function AdminTemplatesPage() {
                       setDeleteError("")
                       setIsDeleteConfirmOpen(true)
                     }}
-                    className="rounded-lg border border-red-200 bg-white px-3 py-2 text-sm font-medium text-red-700 hover:bg-red-50"
+                    className="inline-flex h-10 items-center gap-1.5 rounded-[5px] border border-red-200 bg-white px-3 text-sm font-medium text-red-700 hover:bg-red-50"
                   >
+                    <Trash2 className="h-4 w-4" />
                     템플릿 삭제
                   </button>
                 </>
@@ -952,11 +1023,10 @@ export default function AdminTemplatesPage() {
               >
                 JSON 추출
               </button>
-              <button type="button" onClick={() => setOverlayTemplateId(null)} className="rounded-lg border border-gray-300 bg-white p-2 text-gray-700 hover:bg-gray-50"><X className="h-4 w-4" /></button>
             </div>
           </div>
 
-          <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto p-4">
+          <div className="mx-auto flex min-h-0 w-full max-w-4xl flex-1 flex-col gap-4 overflow-y-auto p-5">
             <DndContext
               sensors={sensors}
               collisionDetection={closestCenter}

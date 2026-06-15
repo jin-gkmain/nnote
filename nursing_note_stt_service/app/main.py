@@ -6,6 +6,7 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi.concurrency import run_in_threadpool
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -96,7 +97,8 @@ def _transcribe_whisperx(
         language=language,
         compute_type=compute_type,
     )
-    asr_result = stt_model.transcribe(upload_path, language=language)
+    audio = whisperx.load_audio(upload_path)
+    asr_result = stt_model.transcribe(audio, language=language)
     align_model, align_metadata = whisperx.load_align_model(
         language_code=language,
         device=device,
@@ -105,7 +107,7 @@ def _transcribe_whisperx(
         asr_result.get("segments", []),
         align_model,
         align_metadata,
-        upload_path,
+        audio,
         device,
     )
     diarize_df = None
@@ -120,7 +122,7 @@ def _transcribe_whisperx(
                 token=hf_token or None,
                 device=device,
             )
-            diarize_df = diarize_pipeline(upload_path)
+            diarize_df = diarize_pipeline(audio)
         except Exception as diarize_exc:
             diarization_skip_reason = str(diarize_exc)[:500]
             diarize_df = None
@@ -237,7 +239,8 @@ async def post_transcribe(
     filename = file.filename or "recording.wav"
 
     try:
-        return _transcribe_whisperx(
+        return await run_in_threadpool(
+            _transcribe_whisperx,
             upload_path,
             filename,
             lang,
