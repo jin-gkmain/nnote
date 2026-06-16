@@ -572,14 +572,13 @@ export function RecordDetailOverlay({
 
   return (
     <div
-      className="fixed top-[var(--nursing-app-header-offset)] bottom-0 left-0 right-0 z-[260] flex flex-col bg-white lg:left-[100px]"
+      className="fixed inset-x-0 top-0 bottom-0 z-[260] flex flex-col bg-white lg:left-[100px]"
       role="dialog"
       aria-modal="true"
       aria-label="기록 상세"
     >
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
-        {/* 앱 TODAY 헤더 아래: 뒤로 · 수정/EMR (배경 단색) */}
-        <div className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-b border-gray-200 bg-white px-3 py-3 sm:px-5">
+        <div className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-b border-gray-200 bg-white px-3 pb-3 pt-[max(0.75rem,env(safe-area-inset-top))] sm:px-5">
           <button
             type="button"
             onClick={onClose}

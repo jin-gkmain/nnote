@@ -49,7 +49,7 @@ export default function SettingsPage() {
       <h1 className="text-[28px] font-bold leading-tight text-[#111827] sm:text-3xl">
         내정보
       </h1>
-      <Tabs defaultValue="account" className="min-h-0 w-full flex-1 gap-4 overflow-hidden">
+      <Tabs defaultValue="account" className="w-full gap-4">
         <TabsList className="h-auto w-full justify-start gap-1 overflow-x-auto rounded-xl border border-[#E5E7EB] bg-[#F3F4F6] p-1 sm:w-auto">
           <TabsTrigger
             value="account"
@@ -64,7 +64,7 @@ export default function SettingsPage() {
             단축어
           </TabsTrigger>
         </TabsList>
-        <TabsContent value="account" className="mt-0 min-h-0 overflow-y-auto overscroll-contain">
+        <TabsContent value="account" className="mt-0 min-w-0">
           <AccountSettingsSection
             user={user}
             token={token}
@@ -72,7 +72,7 @@ export default function SettingsPage() {
             onEnterAdminMode={() => navigate(ROUTES.adminRoot)}
           />
         </TabsContent>
-        <TabsContent value="input-assist" className="mt-0 min-h-0 overflow-y-auto overscroll-contain">
+        <TabsContent value="input-assist" className="mt-0 min-w-0">
           <InputAssistSettingsSection token={token} />
         </TabsContent>
       </Tabs>
@@ -206,7 +206,7 @@ function InputAssistSettingsSection({ token }: { token: string }) {
   }
 
   return (
-    <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm sm:p-6">
+    <div className="min-w-0 rounded-xl border border-gray-200 bg-white p-4 shadow-sm sm:p-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <p className="text-sm font-semibold text-gray-900">단축어 설정</p>
@@ -233,7 +233,7 @@ function InputAssistSettingsSection({ token }: { token: string }) {
               value={testTemplateId}
               onChange={(e) => setTestTemplateId(e.target.value as VoiceRecordTemplateId)}
               disabled={templatesQuery.isLoading || templateIds.length === 0}
-              className="h-9 rounded-md border border-gray-300 bg-white px-2 text-sm"
+              className="h-9 min-w-0 rounded-md border border-gray-300 bg-white px-2 text-sm"
             >
               {templateIds.map((id) => (
                 <option key={id} value={id}>
@@ -248,7 +248,7 @@ function InputAssistSettingsSection({ token }: { token: string }) {
               value={testFieldKey}
               onChange={(e) => setTestFieldKey(e.target.value)}
               disabled={testFieldOptions.length === 0}
-              className="h-9 rounded-md border border-gray-300 bg-white px-2 text-sm"
+              className="h-9 min-w-0 rounded-md border border-gray-300 bg-white px-2 text-sm"
             >
               {testFieldOptions.map((option) => (
                 <option key={option.fieldKey} value={option.fieldKey}>
@@ -309,19 +309,19 @@ function InputAssistSettingsSection({ token }: { token: string }) {
         </p>
         <div className="space-y-2">
           {entries.map((entry, index) => (
-            <div key={entry.id} className="grid grid-cols-1 gap-2 md:grid-cols-[10rem_minmax(0,1fr)_auto]">
+            <div key={entry.id} className="grid min-w-0 grid-cols-1 gap-2 md:grid-cols-[10rem_minmax(0,1fr)_auto]">
               <input
                 type="text"
                 value={entry.trigger}
                 onChange={(e) => updateEntry(index, { trigger: e.target.value })}
-                className="h-10 rounded-md border border-gray-300 px-3 text-sm"
+                className="h-10 min-w-0 rounded-md border border-gray-300 px-3 text-sm"
                 placeholder=".단축어"
               />
               <input
                 type="text"
                 value={entry.replacement}
                 onChange={(e) => updateEntry(index, { replacement: e.target.value })}
-                className="h-10 rounded-md border border-gray-300 px-3 text-sm"
+                className="h-10 min-w-0 rounded-md border border-gray-300 px-3 text-sm"
                 placeholder="치환 문장"
               />
               <button

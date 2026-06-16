@@ -8,21 +8,8 @@ html {
   text-size-adjust: 100%;
 }
 
-/**
- * AppLayout 상단 헤더(TODAY) 아래부터 기록 상세 오버레이를 열 때 사용.
- * 값은 AppLayout header와 동기화: 모바일 safe-area + min-h 52px + pb-2, md 이상 h-60.
- */
 :root {
-  --nursing-app-header-offset: calc(
-    env(safe-area-inset-top, 0px) + 3.25rem + 0.5rem
-  );
   --nursing-mobile-tabbar-height: 5.25rem;
-}
-
-@media (min-width: 768px) {
-  :root {
-    --nursing-app-header-offset: 3.75rem;
-  }
 }
 
 textarea {
